@@ -3,37 +3,38 @@ import argparse
 import os
 import subprocess
 
+def package_exists(import_name: str) -> bool:
+	"""
+	Enter the name of the module, it returns True if the module exists, False otherwise.
+	"""
+	try:
+		importlib.util.find_spec(import_name)
+		return True
+	except ModuleNotFoundError:
+		return False
+
 def get_package_path(import_name: str) -> str:
 	"""
 	Enter the name of the module, it returns the path to the directory containing the module.
 	"""
-	try:
-		# Load the module based on the import name
-		spec = importlib.util.find_spec(import_name)
-		if not spec:
-			print(f"No module named '{import_name}' found")
-			return None
-		# Get the path to the module
-		module_path = spec.origin
-		# Return the directory containing the module
-		return os.path.dirname(module_path)
-	except ModuleNotFoundError:
-		print(f"No module named '{import_name}' found")
-		return None
-	except AttributeError:
-		print(f"Could not determine the path for the module named '{import_name}'")
-		return None
+	spec = importlib.util.find_spec(import_name)
+	return spec.submodule_search_locations[0] if spec else ""
+
+def gitignore_exists(repo_path: str) -> bool:
+	"""
+	Enter the path to the repository, it returns True if the .gitignore file exists, False otherwise.
+	"""
+	gitignore_path = os.path.join(repo_path, ".gitignore")
+	return os.path.exists(gitignore_path)
 
 def get_gitignore(repo_path: str) -> str:
 	"""
 	Find the .gitignore file in the repository if it exists and return the content.
 	"""
 	gitignore_path = os.path.join(repo_path, ".gitignore")
-	if os.path.exists(gitignore_path):
-		with open(gitignore_path, "r") as f:
-			gitignore = f.read().split('\n')
-			return gitignore
-	return "No .gitignore file found"
+	with open(gitignore_path, "r") as f:
+		gitignore = f.read().split('\n')
+	return gitignore
 
 def exclude_gitignored_files(list_of_files, gitignore: list) -> list:
 	"""
@@ -50,7 +51,6 @@ def exclude_gitignored_files(list_of_files, gitignore: list) -> list:
 		list_of_files = [file for file in list_of_files if line not in file]
 	return list_of_files
 
-
 def get_tree(repo_path: str) -> str:
 	"""
 	Takes the repo path and returns the tree structure of the repository as a string.
@@ -63,10 +63,10 @@ def get_tree(repo_path: str) -> str:
 	# remove the file after reading
 	os.remove("tree.txt")
 	# use exclude_gitignored_files to remove gitignored files from the tree
-	gitignore = get_gitignore(repo_path)
-	if gitignore != "No .gitignore file found":
+	if gitignore_exists(repo_path):
+		gitignore = get_gitignore(repo_path)
 		tree = exclude_gitignored_files(tree.split('\n'), gitignore)
-	tree = "\n".join(tree)
+		tree = "\n".join(tree)
 	return tree
 
 def combine_code_files(repo_path, module_name):
@@ -75,9 +75,21 @@ def combine_code_files(repo_path, module_name):
 	"""
 	output_file = f'module_files/{module_name}.txt'
 	with open(output_file, 'w', encoding='utf-8') as outfile:
+		# Add the module name at the top of the file
+		outfile.write(f"Module Name: {module_name}\n")
+		outfile.write("=============================================\n\n")
+		# Add the tree structure at the top of the file
+		outfile.write("Tree Structure:\n")
+		tree = get_tree(repo_path)
+		outfile.write(tree)
+		outfile.write("=============================================\n\n")
 		for root, dirs, files in os.walk(repo_path):
 			for file in files:
 				file_path = os.path.join(root, file)
+				if gitignore_exists(repo_path):
+					gitignore = get_gitignore(repo_path)
+					if exclude_gitignored_files([file_path], gitignore) == []:
+						continue
 				# Skip the output file itself if it's in the repository
 				if file_path == output_file:
 					continue
@@ -92,27 +104,23 @@ def combine_code_files(repo_path, module_name):
 						print(f"Error processing {file_path}: {str(e)}")
 
 def main():
+	"""
+	Take user input from command line and combine all code files in the module into a single file.
+	"""
 	parser = argparse.ArgumentParser(description="Find a python library path by import name.")
 	# Add arguments
 	parser.add_argument("input_string", type=str, help="A simple input string")
 	# Parse the arguments
 	args = parser.parse_args()
 	# Access the arguments
-	import_name = args.input_string
-	package_path = get_package_path(import_name)
-	if package_path:
-		print(f"The installation path for {import_name} is: {package_path}")
+	module_name = args.input_string
+	if package_exists(module_name):
+		repo_path = get_package_path(module_name)
+		combine_code_files(repo_path, module_name)
+		print(f"All code files have been combined into {module_name}.txt")
 	else:
-		print("Module not found.")
+		print(f"The module {module_name} does not exist.")
 
 
-module_name = "instructor"
-repo_path = get_package_path(module_name)
-combine_code_files(repo_path, module_name)
-
-# if __name__ == "__main__":
-#     repo_path = input("Enter the path to the repository: ")
-#     output_file = input("Enter the name of the output file: ")
-	
-#     combine_code_files(repo_path, output_file)
-#     print(f"All code files have been combined into {output_file}")
+if __name__ == "__main__":
+	main()
