@@ -1,6 +1,7 @@
 import importlib.util
 import argparse
 import os
+import subprocess
 
 def get_package_path(import_name: str) -> str:
 	"""
@@ -23,11 +24,56 @@ def get_package_path(import_name: str) -> str:
 		print(f"Could not determine the path for the module named '{import_name}'")
 		return None
 
+def get_gitignore(repo_path: str) -> str:
+	"""
+	Find the .gitignore file in the repository if it exists and return the content.
+	"""
+	gitignore_path = os.path.join(repo_path, ".gitignore")
+	if os.path.exists(gitignore_path):
+		with open(gitignore_path, "r") as f:
+			gitignore = f.read().split('\n')
+			return gitignore
+	return "No .gitignore file found"
+
+def exclude_gitignored_files(list_of_files, gitignore: list) -> list:
+	"""
+	Looks through a list of files and determines which ones are gitignored.
+	Returns a list of the files that are NOT gitignored.
+	"""
+	# Remove empty lines from the gitignore
+	gitignore = [line for line in gitignore if line]
+	# Remove comments from the gitignore
+	gitignore = [line for line in gitignore if not line.startswith("#")]
+	# Remove the files that are gitignored
+	for line in gitignore:
+		# Remove the gitignore line from the list of files
+		list_of_files = [file for file in list_of_files if line not in file]
+	return list_of_files
+
+
+def get_tree(repo_path: str) -> str:
+	"""
+	Takes the repo path and returns the tree structure of the repository as a string.
+	This will go at the top of the module_file to provide more context for the LLM.
+	"""
+	subprocess.run(["tree", repo_path, "-o", "tree.txt"])
+	# read the result from the file
+	with open("tree.txt", "r") as f:
+		tree = f.read()
+	# remove the file after reading
+	os.remove("tree.txt")
+	# use exclude_gitignored_files to remove gitignored files from the tree
+	gitignore = get_gitignore(repo_path)
+	if gitignore != "No .gitignore file found":
+		tree = exclude_gitignored_files(tree.split('\n'), gitignore)
+	tree = "\n".join(tree)
+	return tree
+
 def combine_code_files(repo_path, module_name):
 	"""
 	Takes the path and the module name, and it saves a combined file of the repo to a file with the module name + '.txt'
 	"""
-	output_file = module_name + '.txt'
+	output_file = f'module_files/{module_name}.txt'
 	with open(output_file, 'w', encoding='utf-8') as outfile:
 		for root, dirs, files in os.walk(repo_path):
 			for file in files:
