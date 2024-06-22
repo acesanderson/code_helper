@@ -1,0 +1,4703 @@
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/client_anthropic.py
+=======
+from __future__ import annotations
+
+import anthropic
+import instructor
+
+from typing import overload, Any
+
+
+@overload
+def from_anthropic(
+    client: (
+        anthropic.Anthropic | anthropic.AnthropicBedrock | anthropic.AnthropicVertex
+    ),
+    mode: instructor.Mode = instructor.Mode.ANTHROPIC_TOOLS,
+    **kwargs: Any,
+) -> instructor.Instructor: ...
+
+
+@overload
+def from_anthropic(
+    client: (
+        anthropic.AsyncAnthropic
+        | anthropic.AsyncAnthropicBedrock
+        | anthropic.AsyncAnthropicVertex
+    ),
+    mode: instructor.Mode = instructor.Mode.ANTHROPIC_TOOLS,
+    **kwargs: Any,
+) -> instructor.AsyncInstructor: ...
+
+
+def from_anthropic(
+    client: (
+        anthropic.Anthropic
+        | anthropic.AsyncAnthropic
+        | anthropic.AnthropicBedrock
+        | anthropic.AsyncAnthropicBedrock
+        | anthropic.AsyncAnthropicVertex
+        | anthropic.AnthropicVertex
+    ),
+    mode: instructor.Mode = instructor.Mode.ANTHROPIC_TOOLS,
+    **kwargs: Any,
+) -> instructor.Instructor | instructor.AsyncInstructor:
+    assert (
+        mode
+        in {
+            instructor.Mode.ANTHROPIC_JSON,
+            instructor.Mode.ANTHROPIC_TOOLS,
+        }
+    ), "Mode be one of {instructor.Mode.ANTHROPIC_JSON, instructor.Mode.ANTHROPIC_TOOLS}"
+
+    assert isinstance(
+        client,
+        (
+            anthropic.Anthropic,
+            anthropic.AsyncAnthropic,
+            anthropic.AnthropicBedrock,
+            anthropic.AnthropicVertex,
+            anthropic.AsyncAnthropicBedrock,
+            anthropic.AsyncAnthropicVertex,
+        ),
+    ), "Client must be an instance of {anthropic.Anthropic, anthropic.AsyncAnthropic, anthropic.AnthropicBedrock, anthropic.AsyncAnthropicBedrock,  anthropic.AnthropicVertex, anthropic.AsyncAnthropicVertex}"
+
+    create = client.messages.create
+
+    if isinstance(
+        client,
+        (anthropic.Anthropic, anthropic.AnthropicBedrock, anthropic.AnthropicVertex),
+    ):
+        return instructor.Instructor(
+            client=client,
+            create=instructor.patch(create=create, mode=mode),
+            provider=instructor.Provider.ANTHROPIC,
+            mode=mode,
+            **kwargs,
+        )
+
+    else:
+        return instructor.AsyncInstructor(
+            client=client,
+            create=instructor.patch(create=create, mode=mode),
+            provider=instructor.Provider.ANTHROPIC,
+            mode=mode,
+            **kwargs,
+        )
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/client_groq.py
+=======
+from __future__ import annotations
+
+from typing import overload, Any
+
+import groq
+import instructor
+
+
+@overload
+def from_groq(
+    client: groq.Groq,
+    mode: instructor.Mode = instructor.Mode.TOOLS,
+    **kwargs: Any,
+) -> instructor.Instructor: ...
+
+
+@overload
+def from_groq(
+    client: groq.AsyncGroq,
+    mode: instructor.Mode = instructor.Mode.TOOLS,
+    **kwargs: Any,
+) -> instructor.AsyncInstructor: ...
+
+
+def from_groq(
+    client: groq.Groq | groq.AsyncGroq,
+    mode: instructor.Mode = instructor.Mode.TOOLS,
+    **kwargs: Any,
+) -> instructor.Instructor | instructor.AsyncInstructor:
+    assert mode in {
+        instructor.Mode.JSON,
+        instructor.Mode.TOOLS,
+    }, "Mode be one of {instructor.Mode.JSON, instructor.Mode.TOOLS}"
+
+    assert isinstance(
+        client, (groq.Groq, groq.AsyncGroq)
+    ), "Client must be an instance of groq.GROQ"
+
+    if isinstance(client, groq.Groq):
+        return instructor.Instructor(
+            client=client,
+            create=instructor.patch(create=client.chat.completions.create, mode=mode),
+            provider=instructor.Provider.GROQ,
+            mode=mode,
+            **kwargs,
+        )
+
+    else:
+        return instructor.AsyncInstructor(
+            client=client,
+            create=instructor.patch(create=client.chat.completions.create, mode=mode),
+            provider=instructor.Provider.GROQ,
+            mode=mode,
+            **kwargs,
+        )
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/client_vertexai.py
+=======
+from __future__ import annotations
+
+from typing import Any
+
+from vertexai.preview.generative_models import ToolConfig  # type: ignore[reportMissingTypeStubs]
+import vertexai.generative_models as gm  # type: ignore[reportMissingTypeStubs]
+from pydantic import BaseModel
+import instructor
+import jsonref  # type: ignore[reportMissingTypeStubs]
+
+
+def _create_vertexai_tool(model: BaseModel) -> gm.Tool:
+    schema: dict[Any, Any] = jsonref.replace_refs(model.model_json_schema())  # type: ignore[reportMissingTypeStubs]
+
+    parameters: dict[Any, Any] = {
+        "type": schema["type"],
+        "properties": schema["properties"],
+        "required": schema["required"],
+    }
+
+    declaration = gm.FunctionDeclaration(
+        name=model.__name__, description=model.__doc__, parameters=parameters
+    )
+
+    tool = gm.Tool(function_declarations=[declaration])
+
+    return tool
+
+
+def _vertexai_message_parser(message: dict[str, str]) -> gm.Content:
+    return gm.Content(
+        role=message["role"], parts=[gm.Part.from_text(message["content"])]
+    )
+
+
+def vertexai_function_response_parser(
+    response: gm.GenerationResponse, exception: Exception
+) -> gm.Content:
+    return gm.Content(
+        parts=[
+            gm.Part.from_function_response(
+                name=response.candidates[0].content.parts[0].function_call.name,
+                response={
+                    "content": f"Validation Error found:\n{exception}\nRecall the function correctly, fix the errors"
+                },
+            )
+        ]
+    )
+
+
+def vertexai_process_response(_kwargs: dict[str, Any], model: BaseModel):
+    messages = _kwargs.pop("messages")
+    contents = [
+        _vertexai_message_parser(message)  # type: ignore[reportUnkownArgumentType]
+        if isinstance(message, dict)
+        else message
+        for message in messages
+    ]
+    tool = _create_vertexai_tool(model=model)
+    tool_config = ToolConfig(
+        function_calling_config=ToolConfig.FunctionCallingConfig(
+            mode=ToolConfig.FunctionCallingConfig.Mode.ANY,
+        )
+    )
+    return contents, [tool], tool_config
+
+
+def from_vertexai(
+    client: gm.GenerativeModel,
+    mode: instructor.Mode = instructor.Mode.VERTEXAI_TOOLS,
+    _async: bool = False,
+    **kwargs: Any,
+) -> instructor.Instructor:
+    assert (
+        mode == instructor.Mode.VERTEXAI_TOOLS
+    ), "Mode must be instructor.Mode.VERTEXAI_TOOLS"
+
+    assert isinstance(
+        client, gm.GenerativeModel
+    ), "Client must be an instance of vertexai.generative_models.GenerativeModel"
+
+    create = client.generate_content_async if _async else client.generate_content
+
+    return instructor.Instructor(
+        client=client,
+        create=instructor.patch(create=create, mode=mode),
+        provider=instructor.Provider.VERTEXAI,
+        mode=mode,
+        **kwargs,
+    )
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/client_mistral.py
+=======
+# Future imports to ensure compatibility with Python 3.9
+from __future__ import annotations
+
+import mistralai.client
+import mistralai.async_client as mistralaiasynccli
+import instructor
+from typing import overload, Any
+
+
+@overload
+def from_mistral(
+    client: mistralai.client.MistralClient,
+    mode: instructor.Mode = instructor.Mode.MISTRAL_TOOLS,
+    **kwargs: Any,
+) -> instructor.Instructor: ...
+
+
+@overload
+def from_mistral(
+    client: mistralaiasynccli.MistralAsyncClient,
+    mode: instructor.Mode = instructor.Mode.MISTRAL_TOOLS,
+    **kwargs: Any,
+) -> instructor.AsyncInstructor: ...
+
+
+def from_mistral(
+    client: mistralai.client.MistralClient | mistralaiasynccli.MistralAsyncClient,
+    mode: instructor.Mode = instructor.Mode.MISTRAL_TOOLS,
+    **kwargs: Any,
+) -> instructor.Instructor | instructor.AsyncInstructor:
+    assert mode in {
+        instructor.Mode.MISTRAL_TOOLS,
+    }, "Mode be one of {instructor.Mode.MISTRAL_TOOLS}"
+
+    assert isinstance(
+        client, (mistralai.client.MistralClient, mistralaiasynccli.MistralAsyncClient)
+    ), "Client must be an instance of mistralai.client.MistralClient or mistralai.async_cli.MistralAsyncClient"
+
+    if isinstance(client, mistralai.client.MistralClient):
+        return instructor.Instructor(
+            client=client,
+            create=instructor.patch(create=client.chat, mode=mode),
+            provider=instructor.Provider.MISTRAL,
+            mode=mode,
+            **kwargs,
+        )
+
+    else:
+        return instructor.AsyncInstructor(
+            client=client,
+            create=instructor.patch(create=client.chat, mode=mode),
+            provider=instructor.Provider.MISTRAL,
+            mode=mode,
+            **kwargs,
+        )
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/mode.py
+=======
+import enum
+import warnings
+
+
+class _WarnOnFunctionsAccessEnumMeta(enum.EnumMeta):
+    def __getattribute__(cls, name: str):
+        if name == "FUNCTIONS":
+            warnings.warn(
+                "FUNCTIONS is deprecated and will be removed in future versions",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        return super().__getattribute__(name)
+
+
+class Mode(enum.Enum, metaclass=_WarnOnFunctionsAccessEnumMeta):
+    """The mode to use for patching the client"""
+
+    FUNCTIONS = "function_call"
+    PARALLEL_TOOLS = "parallel_tool_call"
+    TOOLS = "tool_call"
+    MISTRAL_TOOLS = "mistral_tools"
+    JSON = "json_mode"
+    MD_JSON = "markdown_json_mode"
+    JSON_SCHEMA = "json_schema_mode"
+    ANTHROPIC_TOOLS = "anthropic_tools"
+    ANTHROPIC_JSON = "anthropic_json"
+    COHERE_TOOLS = "cohere_tools"
+    VERTEXAI_TOOLS = "vertexai_tools"
+    GEMINI_JSON = "gemini_json"
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/process_response.py
+=======
+# type: ignore[all]
+from __future__ import annotations
+
+from collections.abc import Iterable
+from textwrap import dedent
+from instructor.dsl.iterable import IterableBase, IterableModel
+from instructor.dsl.parallel import ParallelBase, ParallelModel, handle_parallel_model
+from instructor.dsl.partial import PartialBase
+from instructor.dsl.simple_type import AdapterBase, ModelAdapter, is_simple_type
+from instructor.function_calls import OpenAISchema, openai_schema
+from instructor.utils import merge_consecutive_messages
+from openai.types.chat import ChatCompletion
+from pydantic import BaseModel
+
+import json
+import inspect
+import logging
+from typing import (
+    get_args,
+    get_origin,
+    TypeVar,
+    Any,
+)
+from collections.abc import Generator
+from typing_extensions import ParamSpec
+
+from instructor.mode import Mode
+
+from .utils import transform_to_gemini_prompt
+
+logger = logging.getLogger("instructor")
+
+T_Model = TypeVar("T_Model", bound=BaseModel)
+T_Retval = TypeVar("T_Retval")
+T_ParamSpec = ParamSpec("T_ParamSpec")
+T = TypeVar("T")
+
+
+async def process_response_async(
+    response: ChatCompletion,
+    *,
+    response_model: type[T_Model | OpenAISchema | BaseModel] | None,
+    stream: bool = False,
+    validation_context: dict[str, Any] | None = None,
+    strict: bool | None = None,
+    mode: Mode = Mode.TOOLS,
+) -> T_Model | ChatCompletion:
+    """Processes a OpenAI response with the response model, if available.
+    It can use `validation_context` and `strict` to validate the response
+    via the pydantic model
+
+    Args:
+        response (ChatCompletion): The response from OpenAI's API
+        response_model (BaseModel): The response model to use for parsing the response
+        stream (bool): Whether the response is a stream
+        validation_context (dict, optional): The validation context to use for validating the response. Defaults to None.
+        strict (bool, optional): Whether to use strict json parsing. Defaults to None.
+    """
+
+    logger.debug(
+        f"Instructor Raw Response: {response}",
+    )
+    if response_model is None:
+        return response
+
+    if (
+        inspect.isclass(response_model)
+        and issubclass(response_model, (IterableBase, PartialBase))
+        and stream
+    ):
+        model = await response_model.from_streaming_response_async(
+            response,
+            mode=mode,
+        )
+        return model
+
+    model = response_model.from_response(
+        response,
+        validation_context=validation_context,
+        strict=strict,
+        mode=mode,
+    )
+
+    # ? This really hints at the fact that we need a better way of
+    # ? attaching usage data and the raw response to the model we return.
+    if isinstance(model, IterableBase):
+        logger.debug(f"Returning takes from IterableBase")
+        return [task for task in model.tasks]
+
+    if isinstance(response_model, ParallelBase):
+        logger.debug(f"Returning model from ParallelBase")
+        return model
+
+    if isinstance(model, AdapterBase):
+        logger.debug(f"Returning model from AdapterBase")
+        return model.content
+
+    model._raw_response = response
+    return model
+
+
+def process_response(
+    response: T_Model,
+    *,
+    response_model: type[OpenAISchema | BaseModel],
+    stream: bool,
+    validation_context: dict | None = None,
+    strict=None,
+    mode: Mode = Mode.TOOLS,
+) -> T_Model | Generator[T_Model, None, None] | ChatCompletion:
+    """Processes a OpenAI response with the response model, if available.
+
+    Args:
+        response (T): The response from OpenAI's API
+        response_model (Type[T_Model]): The response model to use for parsing the response
+        stream (bool): Whether the response is a stream
+        validation_context (dict, optional): The validation context to use for validating the response. Defaults to None.
+        strict (_type_, optional): Whether to use strict json parsing. Defaults to None.
+        mode (Mode, optional): The openai completion mode. Defaults to Mode.FUNCTIONS.
+
+    Returns:
+        Union[T_Model, T]: The parsed response, if a response model is available, otherwise the response as is from the SDK
+    """
+
+    logger.debug(
+        f"Instructor Raw Response: {response}",
+    )
+
+    if response_model is None:
+        logger.debug("No response model, returning response as is")
+        return response
+
+    if (
+        inspect.isclass(response_model)
+        and issubclass(response_model, (IterableBase, PartialBase))
+        and stream
+    ):
+        model = response_model.from_streaming_response(
+            response,
+            mode=mode,
+        )
+        return model
+
+    model = response_model.from_response(
+        response,
+        validation_context=validation_context,
+        strict=strict,
+        mode=mode,
+    )
+
+    # ? This really hints at the fact that we need a better way of
+    # ? attaching usage data and the raw response to the model we return.
+    if isinstance(model, IterableBase):
+        logger.debug(f"Returning takes from IterableBase")
+        return [task for task in model.tasks]
+
+    if isinstance(response_model, ParallelBase):
+        logger.debug(f"Returning model from ParallelBase")
+        return model
+
+    if isinstance(model, AdapterBase):
+        logger.debug(f"Returning model from AdapterBase")
+        return model.content
+
+    model._raw_response = response
+    return model
+
+
+def handle_response_model(
+    response_model: type[T] | None, mode: Mode = Mode.TOOLS, **kwargs: Any
+) -> tuple[type[T], dict[str, Any]]:
+    """Prepare the response model type hint, and returns the response_model
+    along with the new modified kwargs needed to be able to use the response_model
+    parameter with the patch function.
+
+
+    Args:
+        response_model (T): The response model to use for parsing the response
+        mode (Mode, optional): The openai completion mode. Defaults to Mode.TOOLS.
+
+    Raises:
+        NotImplementedError: When using stream=True with a non-iterable response_model
+        ValueError: When using an invalid patch mode
+
+    Returns:
+        Union[Type[OpenAISchema], dict]: The response model to use for parsing the response
+    """
+    new_kwargs = kwargs.copy()
+    if response_model is not None:
+        # Handles the case where the response_model is a simple type
+        # Literal, Annotated, Union, str, int, float, bool, Enum
+        # We wrap the response_model in a ModelAdapter that sets 'content' as the response
+        if is_simple_type(response_model):
+            response_model = ModelAdapter[response_model]
+
+        # This a special case for parallel tools
+        if mode == Mode.PARALLEL_TOOLS:
+            assert (
+                new_kwargs.get("stream", False) is False
+            ), "stream=True is not supported when using PARALLEL_TOOLS mode"
+            new_kwargs["tools"] = handle_parallel_model(response_model)
+            new_kwargs["tool_choice"] = "auto"
+
+            # This is a special case for parallel models
+            response_model = ParallelModel(typehint=response_model)
+            return response_model, new_kwargs
+
+        # This is for all other single model cases
+        if get_origin(response_model) is Iterable:
+            iterable_element_class = get_args(response_model)[0]
+            response_model = IterableModel(iterable_element_class)
+        if not issubclass(response_model, OpenAISchema):
+            response_model = openai_schema(response_model)  # type: ignore
+
+        if new_kwargs.get("stream", False) and not issubclass(
+            response_model, (IterableBase, PartialBase)
+        ):
+            raise NotImplementedError(
+                "stream=True is not supported when using response_model parameter for non-iterables"
+            )
+
+        if mode == Mode.FUNCTIONS:
+            new_kwargs["functions"] = [response_model.openai_schema]  # type: ignore
+            new_kwargs["function_call"] = {"name": response_model.openai_schema["name"]}  # type: ignore
+        elif mode in {Mode.TOOLS, Mode.MISTRAL_TOOLS}:
+            new_kwargs["tools"] = [
+                {
+                    "type": "function",
+                    "function": response_model.openai_schema,
+                }
+            ]
+            if mode == Mode.MISTRAL_TOOLS:
+                new_kwargs["tool_choice"] = "any"
+            else:
+                new_kwargs["tool_choice"] = {
+                    "type": "function",
+                    "function": {"name": response_model.openai_schema["name"]},
+                }
+        elif mode in {Mode.JSON, Mode.MD_JSON, Mode.JSON_SCHEMA}:
+            # If its a JSON Mode we need to massage the prompt a bit
+            # in order to get the response we want in a json format
+            message = dedent(
+                f"""
+                As a genius expert, your task is to understand the content and provide
+                the parsed objects in json that match the following json_schema:\n
+
+                {json.dumps(response_model.model_json_schema(), indent=2)}
+
+                Make sure to return an instance of the JSON, not the schema itself
+                """
+            )
+
+            if mode == Mode.JSON:
+                new_kwargs["response_format"] = {"type": "json_object"}
+
+            elif mode == Mode.JSON_SCHEMA:
+                new_kwargs["response_format"] = {
+                    "type": "json_object",
+                    "schema": response_model.model_json_schema(),
+                }
+
+            elif mode == Mode.MD_JSON:
+                new_kwargs["messages"].append(
+                    {
+                        "role": "user",
+                        "content": "Return the correct JSON response within a ```json codeblock. not the JSON_SCHEMA",
+                    },
+                )
+                # For some providers, the messages array must be alternating roles of user and assistant, we must merge
+                # consecutive user messages into a single message
+                new_kwargs["messages"] = merge_consecutive_messages(
+                    new_kwargs["messages"]
+                )
+            # check that the first message is a system message
+            # if it is not, add a system message to the beginning
+            if new_kwargs["messages"][0]["role"] != "system":
+                new_kwargs["messages"].insert(
+                    0,
+                    {
+                        "role": "system",
+                        "content": message,
+                    },
+                )
+            # if it is, system append the schema to the end
+            else:
+                new_kwargs["messages"][0]["content"] += f"\n\n{message}"
+        elif mode == Mode.ANTHROPIC_TOOLS:
+            tool_descriptions = response_model.anthropic_schema
+            new_kwargs["tools"] = [tool_descriptions]
+            new_kwargs["tool_choice"] = {
+                "type": "tool",
+                "name": response_model.__name__,
+            }
+
+            system_messages = [
+                m["content"] for m in new_kwargs["messages"] if m["role"] == "system"
+            ]
+            new_kwargs["system"] = "\n\n".join(system_messages)
+            new_kwargs["messages"] = [
+                m for m in new_kwargs["messages"] if m["role"] != "system"
+            ]
+
+        elif mode == Mode.ANTHROPIC_JSON:
+            # anthropic wants system message to be a string so we first extract out any system message
+            openai_system_messages = [
+                message["content"]
+                for message in new_kwargs.get("messages", [])
+                if message["role"] == "system"
+            ]
+
+            new_kwargs["system"] = (
+                new_kwargs.get("system", "")
+                + "\n\n"
+                + "\n\n".join(openai_system_messages)
+            )
+
+            new_kwargs["system"] += f"""
+            You must only response in JSON format that adheres to the following schema:
+
+            <JSON_SCHEMA>
+            {json.dumps(response_model.model_json_schema(), indent=2)}
+            </JSON_SCHEMA>
+            """
+            new_kwargs["system"] = dedent(new_kwargs["system"])
+
+            new_kwargs["messages"] = [
+                message
+                for message in new_kwargs.get("messages", [])
+                if message["role"] != "system"
+            ]
+
+            # the messages array must be alternating roles of user and assistant, we must merge
+            # consecutive user messages into a single message
+            new_kwargs["messages"] = merge_consecutive_messages(new_kwargs["messages"])
+
+        elif mode == Mode.COHERE_TOOLS:
+            instruction = f"""\
+Extract a valid {response_model.__name__} object based on the chat history and the json schema below.
+{response_model.model_json_schema()}
+The JSON schema was obtained by running:
+```python
+schema = {response_model.__name__}.model_json_schema()
+```
+
+The output must be a valid JSON object that `{response_model.__name__}.model_validate_json()` can successfully parse.
+"""
+            messages = new_kwargs.pop("messages", [])
+            chat_history = []
+            for message in messages:
+                # format in Cohere's ChatMessage format
+                chat_history.append(
+                    {
+                        "role": message["role"],
+                        "message": message["content"],
+                    }
+                )
+            new_kwargs["message"] = instruction
+            new_kwargs["chat_history"] = chat_history
+        elif mode == Mode.GEMINI_JSON:
+            assert (
+                "model" not in new_kwargs
+            ), "Gemini `model` must be set while patching the client, not passed as a parameter to the create method"
+            message = dedent(
+                f"""
+                As a genius expert, your task is to understand the content and provide
+                the parsed objects in json that match the following json_schema:\n
+
+                {json.dumps(response_model.model_json_schema(), indent=2)}
+
+                Make sure to return an instance of the JSON, not the schema itself
+                """
+            )
+            # check that the first message is a system message
+            # if it is not, add a system message to the beginning
+            if new_kwargs["messages"][0]["role"] != "system":
+                new_kwargs["messages"].insert(
+                    0,
+                    {
+                        "role": "system",
+                        "content": message,
+                    },
+                )
+            # if it is, system append the schema to the end
+            else:
+                new_kwargs["messages"][0]["content"] += f"\n\n{message}"
+
+            # default to json response type
+            new_kwargs["generation_config"] = new_kwargs.get(
+                "generation_config", {}
+            ) | {"response_mime_type": "application/json"}
+
+            map_openai_args_to_gemini = {
+                "max_tokens": "max_output_tokens",
+                "temperature": "temperature",
+                "n": "candidate_count",
+                "top_p": "top_p",
+                "stop": "stop_sequences",
+            }
+
+            # update gemini config if any params are set
+            for k, v in map_openai_args_to_gemini.items():
+                val = new_kwargs.pop(k, None)
+                if val == None:
+                    continue
+                new_kwargs["generation_config"][v] = val
+
+            # gemini has a different prompt format and params from other providers
+            new_kwargs["contents"] = transform_to_gemini_prompt(
+                new_kwargs.pop("messages")
+            )
+
+            # minimize gemini safety related errors - model is highly prone to false alarms
+            from google.generativeai.types import HarmCategory, HarmBlockThreshold
+
+            new_kwargs["safety_settings"] = new_kwargs.get("safety_settings", {}) | {
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+            }
+        elif mode == Mode.VERTEXAI_TOOLS:
+            from instructor.client_vertexai import vertexai_process_response
+
+            contents, tools, tool_config = vertexai_process_response(
+                new_kwargs, response_model
+            )
+            new_kwargs["contents"] = contents
+            new_kwargs["tools"] = tools
+            new_kwargs["tool_config"] = tool_config
+        else:
+            raise ValueError(f"Invalid patch mode: {mode}")
+
+    logger.debug(
+        f"Instructor Request: {mode.value=}, {response_model=}, {new_kwargs=}",
+        extra={
+            "mode": mode.value,
+            "response_model": (
+                response_model.__name__
+                if response_model is not None and hasattr(response_model, "__name__")
+                else str(response_model)
+            ),
+            "new_kwargs": new_kwargs,
+        },
+    )
+    return response_model, new_kwargs
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/client_gemini.py
+=======
+# type: ignore
+from __future__ import annotations
+
+from typing import Any, Literal, overload
+
+import google.generativeai as genai
+
+import instructor
+
+
+@overload
+def from_gemini(
+    client: genai.GenerativeModel,
+    mode: instructor.Mode = instructor.Mode.GEMINI_JSON,
+    use_async: Literal[True] = True,
+    **kwargs: Any,
+) -> instructor.AsyncInstructor: ...
+
+
+@overload
+def from_gemini(
+    client: genai.GenerativeModel,
+    mode: instructor.Mode = instructor.Mode.GEMINI_JSON,
+    use_async: Literal[False] = False,
+    **kwargs: Any,
+) -> instructor.Instructor: ...
+
+
+def from_gemini(
+    client: genai.GenerativeModel,
+    mode: instructor.Mode = instructor.Mode.GEMINI_JSON,
+    use_async: bool = False,
+    **kwargs: Any,
+) -> instructor.Instructor | instructor.AsyncInstructor:
+    assert (
+        mode == instructor.Mode.GEMINI_JSON
+    ), "Mode must be instructor.Mode.GEMINI_JSON"
+
+    assert isinstance(
+        client,
+        (genai.GenerativeModel),
+    ), "Client must be an instance of genai.generativemodel"
+
+    if use_async:
+        create = client.generate_content_async
+        return instructor.AsyncInstructor(
+            client=client,
+            create=instructor.patch(create=create, mode=mode),
+            provider=instructor.Provider.GEMINI,
+            mode=mode,
+            **kwargs,
+        )
+
+    create = client.generate_content
+    return instructor.Instructor(
+        client=client,
+        create=instructor.patch(create=create, mode=mode),
+        provider=instructor.Provider.GEMINI,
+        mode=mode,
+        **kwargs,
+    )
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/retry.py
+=======
+# type: ignore[all]
+from __future__ import annotations
+
+import logging
+
+from openai.types.chat import ChatCompletion
+from instructor.mode import Mode
+from instructor.process_response import process_response, process_response_async
+from instructor.utils import (
+    dump_message,
+    update_total_usage,
+    merge_consecutive_messages,
+)
+from instructor.exceptions import InstructorRetryException
+
+from openai.types.completion_usage import CompletionUsage
+from pydantic import ValidationError
+from tenacity import AsyncRetrying, RetryError, Retrying, stop_after_attempt
+
+
+from json import JSONDecodeError
+from pydantic import BaseModel
+from typing import Callable, TypeVar, Any
+from typing_extensions import ParamSpec
+
+logger = logging.getLogger("instructor")
+
+T_Model = TypeVar("T_Model", bound=BaseModel)
+T_Retval = TypeVar("T_Retval")
+T_ParamSpec = ParamSpec("T_ParamSpec")
+T = TypeVar("T")
+
+
+def reask_messages(response: ChatCompletion, mode: Mode, exception: Exception):
+    if mode == Mode.ANTHROPIC_TOOLS:
+        # The original response
+        assistant_content = []
+        tool_use_id = None
+        for content in response.content:
+            assistant_content.append(content.model_dump())
+            # Assuming exception from single tool invocation
+            if (
+                content.type == "tool_use"
+                and isinstance(exception, ValidationError)
+                and content.name == exception.title
+            ):
+                tool_use_id = content.id
+
+        yield {
+            "role": "assistant",
+            "content": assistant_content,
+        }
+        if tool_use_id is not None:
+            yield {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": f"Validation Error found:\n{exception}\nRecall the function correctly, fix the errors",
+                        "is_error": True,
+                    }
+                ],
+            }
+        else:
+            yield {
+                "role": "user",
+                "content": f"Validation Error due to no tool invocation:\n{exception}\nRecall the function correctly, fix the errors",
+            }
+        return
+    if mode == Mode.ANTHROPIC_JSON:
+        from anthropic.types import Message
+
+        assert isinstance(response, Message)
+        yield {
+            "role": "user",
+            "content": f"""Validation Errors found:\n{exception}\nRecall the function correctly, fix the errors found in the following attempt:\n{response.content[0].text}""",
+        }
+        return
+    if mode == Mode.COHERE_TOOLS:
+        yield {
+            "role": "user",
+            "content": f"Validation Error found:\n{exception}\nRecall the function correctly, fix the errors",
+        }
+        return
+    if mode == Mode.GEMINI_JSON:
+        yield {
+            "role": "user",
+            "parts": [
+                f"Correct the following JSON response, based on the errors given below:\n\nJSON:\n{response.text}\n\nExceptions:\n{exception}"
+            ],
+        }
+        return
+    if mode == Mode.VERTEXAI_TOOLS:
+        from .client_vertexai import vertexai_function_response_parser
+
+        yield response.candidates[0].content
+        yield vertexai_function_response_parser(response, exception)
+        return
+
+    yield dump_message(response.choices[0].message)
+    # TODO: Give users more control on configuration
+    if mode == Mode.TOOLS:
+        for tool_call in response.choices[0].message.tool_calls:
+            yield {
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "name": tool_call.function.name,
+                "content": f"Validation Error found:\n{exception}\nRecall the function correctly, fix the errors",
+            }
+    elif mode == Mode.MD_JSON:
+        yield {
+            "role": "user",
+            "content": f"Correct your JSON ONLY RESPONSE, based on the following errors:\n{exception}",
+        }
+    else:
+        yield {
+            "role": "user",
+            "content": f"Recall the function correctly, fix the errors, exceptions found\n{exception}",
+        }
+
+
+def retry_sync(
+    func: Callable[T_ParamSpec, T_Retval],
+    response_model: type[T_Model],
+    validation_context: dict,
+    args,
+    kwargs,
+    max_retries: int | Retrying = 1,
+    strict: bool | None = None,
+    mode: Mode = Mode.TOOLS,
+) -> T_Model:
+    total_usage = CompletionUsage(completion_tokens=0, prompt_tokens=0, total_tokens=0)
+    if mode in {Mode.ANTHROPIC_TOOLS, Mode.ANTHROPIC_JSON}:
+        from anthropic.types import Usage as AnthropicUsage
+
+        total_usage = AnthropicUsage(input_tokens=0, output_tokens=0)
+
+    # If max_retries is int, then create a Retrying object
+    if isinstance(max_retries, int):
+        logger.debug(f"max_retries: {max_retries}")
+        max_retries = Retrying(
+            stop=stop_after_attempt(max_retries),
+            reraise=True,
+        )
+    if not isinstance(max_retries, (Retrying, AsyncRetrying)):
+        raise ValueError("max_retries must be an int or a `tenacity.Retrying` object")
+
+    try:
+        response = None
+        for attempt in max_retries:
+            with attempt:
+                try:
+                    response = func(*args, **kwargs)
+                    stream = kwargs.get("stream", False)
+                    response = update_total_usage(response, total_usage)
+                    return process_response(
+                        response,
+                        response_model=response_model,
+                        stream=stream,
+                        validation_context=validation_context,
+                        strict=strict,
+                        mode=mode,
+                    )
+                except (ValidationError, JSONDecodeError) as e:
+                    logger.debug(f"Error response: {response}")
+                    if mode in {Mode.GEMINI_JSON, Mode.VERTEXAI_TOOLS}:
+                        kwargs["contents"].extend(reask_messages(response, mode, e))
+                    else:
+                        kwargs["messages"].extend(reask_messages(response, mode, e))
+                    if mode in {Mode.ANTHROPIC_TOOLS, Mode.ANTHROPIC_JSON}:
+                        kwargs["messages"] = merge_consecutive_messages(
+                            kwargs["messages"]
+                        )
+                    raise e
+    except RetryError as e:
+        raise InstructorRetryException(
+            e,
+            last_completion=response,
+            n_attempts=attempt.retry_state.attempt_number,
+            messages=kwargs.get("messages", kwargs.get("contents")),
+            total_usage=total_usage,
+        ) from e
+
+
+async def retry_async(
+    func: Callable[T_ParamSpec, T_Retval],
+    response_model: type[T] | None,
+    validation_context: dict[str, Any] | None,
+    args: Any,
+    kwargs: Any,
+    max_retries: int | AsyncRetrying = 1,
+    strict: bool | None = None,
+    mode: Mode = Mode.TOOLS,
+) -> T:
+    total_usage = CompletionUsage(completion_tokens=0, prompt_tokens=0, total_tokens=0)
+    if mode in {Mode.ANTHROPIC_TOOLS, Mode.ANTHROPIC_JSON}:
+        from anthropic.types import Usage as AnthropicUsage
+
+        total_usage = AnthropicUsage(input_tokens=0, output_tokens=0)
+
+    # If max_retries is int, then create a AsyncRetrying object
+    if isinstance(max_retries, int):
+        logger.debug(f"max_retries: {max_retries}")
+        max_retries = AsyncRetrying(
+            stop=stop_after_attempt(max_retries),
+            reraise=True,
+        )
+    if not isinstance(max_retries, (AsyncRetrying, Retrying)):
+        raise ValueError(
+            "max_retries must be an `int` or a `tenacity.AsyncRetrying` object"
+        )
+
+    try:
+        response = None
+        async for attempt in max_retries:
+            logger.debug(f"Retrying, attempt: {attempt}")
+            with attempt:
+                try:
+                    response: ChatCompletion = await func(*args, **kwargs)
+                    stream = kwargs.get("stream", False)
+                    response = update_total_usage(response, total_usage)
+                    return await process_response_async(
+                        response,
+                        response_model=response_model,
+                        stream=stream,
+                        validation_context=validation_context,
+                        strict=strict,
+                        mode=mode,
+                    )
+                except (ValidationError, JSONDecodeError) as e:
+                    logger.debug(f"Error response: {response}", e)
+                    kwargs["messages"].extend(reask_messages(response, mode, e))
+                    if mode in {Mode.ANTHROPIC_TOOLS, Mode.ANTHROPIC_JSON}:
+                        kwargs["messages"] = merge_consecutive_messages(
+                            kwargs["messages"]
+                        )
+                    raise e
+    except RetryError as e:
+        logger.exception(f"Failed after retries: {e.last_attempt.exception}")
+        raise InstructorRetryException(
+            e,
+            last_completion=response,
+            n_attempts=attempt.retry_state.attempt_number,
+            messages=kwargs["messages"],
+            total_usage=total_usage,
+        ) from e
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/function_calls.py
+=======
+# type: ignore
+import json
+import logging
+from functools import wraps
+from typing import Annotated, Any, Optional, TypeVar, cast
+
+from docstring_parser import parse
+from openai.types.chat import ChatCompletion
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    create_model,
+)
+
+from instructor.exceptions import IncompleteOutputException
+from instructor.mode import Mode
+from instructor.utils import classproperty, extract_json_from_codeblock
+
+T = TypeVar("T")
+
+logger = logging.getLogger("instructor")
+
+
+class OpenAISchema(BaseModel):
+    # Ignore classproperty, since Pydantic doesn't understand it like it would a normal property.
+    model_config = ConfigDict(ignored_types=(classproperty,))
+
+    @classproperty
+    def openai_schema(cls) -> dict[str, Any]:
+        """
+        Return the schema in the format of OpenAI's schema as jsonschema
+
+        Note:
+            Its important to add a docstring to describe how to best use this class, it will be included in the description attribute and be part of the prompt.
+
+        Returns:
+            model_json_schema (dict): A dictionary in the format of OpenAI's schema as jsonschema
+        """
+        schema = cls.model_json_schema()
+        docstring = parse(cls.__doc__ or "")
+        parameters = {
+            k: v for k, v in schema.items() if k not in ("title", "description")
+        }
+        for param in docstring.params:
+            if (name := param.arg_name) in parameters["properties"] and (
+                description := param.description
+            ):
+                if "description" not in parameters["properties"][name]:
+                    parameters["properties"][name]["description"] = description
+
+        parameters["required"] = sorted(
+            k for k, v in parameters["properties"].items() if "default" not in v
+        )
+
+        if "description" not in schema:
+            if docstring.short_description:
+                schema["description"] = docstring.short_description
+            else:
+                schema["description"] = (
+                    f"Correctly extracted `{cls.__name__}` with all "
+                    f"the required parameters with correct types"
+                )
+
+        return {
+            "name": schema["title"],
+            "description": schema["description"],
+            "parameters": parameters,
+        }
+
+    @classproperty
+    def anthropic_schema(cls) -> dict[str, Any]:
+        return {
+            "name": cls.openai_schema["name"],
+            "description": cls.openai_schema["description"],
+            "input_schema": cls.model_json_schema(),
+        }
+
+    @classmethod
+    def from_response(
+        cls,
+        completion: ChatCompletion,
+        validation_context: Optional[dict[str, Any]] = None,
+        strict: Optional[bool] = None,
+        mode: Mode = Mode.TOOLS,
+    ) -> BaseModel:
+        """Execute the function from the response of an openai chat completion
+
+        Parameters:
+            completion (openai.ChatCompletion): The response from an openai chat completion
+            throw_error (bool): Whether to throw an error if the function call is not detected
+            validation_context (dict): The validation context to use for validating the response
+            strict (bool): Whether to use strict json parsing
+            mode (Mode): The openai completion mode
+
+        Returns:
+            cls (OpenAISchema): An instance of the class
+        """
+        if mode == Mode.ANTHROPIC_TOOLS:
+            return cls.parse_anthropic_tools(completion, validation_context, strict)
+
+        if mode == Mode.ANTHROPIC_JSON:
+            return cls.parse_anthropic_json(completion, validation_context, strict)
+
+        if mode == Mode.VERTEXAI_TOOLS:
+            return cls.parse_vertexai_tools(completion, validation_context, strict)
+
+        if mode == Mode.COHERE_TOOLS:
+            return cls.parse_cohere_tools(completion, validation_context, strict)
+
+        if mode == Mode.GEMINI_JSON:
+            return cls.parse_gemini_json(completion, validation_context, strict)
+
+        if completion.choices[0].finish_reason == "length":
+            raise IncompleteOutputException(last_completion=completion)
+
+        if mode == Mode.FUNCTIONS:
+            return cls.parse_functions(completion, validation_context, strict)
+
+        if mode in {Mode.TOOLS, Mode.MISTRAL_TOOLS}:
+            return cls.parse_tools(completion, validation_context, strict)
+
+        if mode in {Mode.JSON, Mode.JSON_SCHEMA, Mode.MD_JSON}:
+            return cls.parse_json(completion, validation_context, strict)
+
+        raise ValueError(f"Invalid patch mode: {mode}")
+
+    @classmethod
+    def parse_anthropic_tools(
+        cls: type[BaseModel],
+        completion: ChatCompletion,
+        validation_context: Optional[dict[str, Any]] = None,
+        strict: Optional[bool] = None,
+    ) -> BaseModel:
+        tool_calls = [c.input for c in completion.content if c.type == "tool_use"]  # type: ignore - TODO update with anthropic specific types
+
+        tool_calls_validator = TypeAdapter(
+            Annotated[list[Any], Field(min_length=1, max_length=1)]
+        )
+        tool_call = tool_calls_validator.validate_python(tool_calls)[0]
+
+        return cls.model_validate(tool_call, context=validation_context, strict=strict)
+
+    @classmethod
+    def parse_anthropic_json(
+        cls: type[BaseModel],
+        completion: ChatCompletion,
+        validation_context: Optional[dict[str, Any]] = None,
+        strict: Optional[bool] = None,
+    ) -> BaseModel:
+        from anthropic.types import Message
+
+        assert isinstance(completion, Message)
+
+        text = completion.content[0].text
+        extra_text = extract_json_from_codeblock(text)
+
+        if strict:
+            return cls.model_validate_json(
+                extra_text, context=validation_context, strict=True
+            )
+        else:
+            # Allow control characters.
+            parsed = json.loads(extra_text, strict=False)
+            # Pydantic non-strict: https://docs.pydantic.dev/latest/concepts/strict_mode/
+            return cls.model_validate(parsed, context=validation_context, strict=False)
+
+    @classmethod
+    def parse_gemini_json(
+        cls: type[BaseModel],
+        completion: Any,
+        validation_context: Optional[dict[str, Any]] = None,
+        strict: Optional[bool] = None,
+    ) -> BaseModel:
+        try:
+            text = completion.text
+        except ValueError:
+            logger.debug(
+                f"Error response: {completion.result.candidates[0].finish_reason}\n\n{completion.result.candidates[0].safety_ratings}"
+            )
+
+        try:
+            extra_text = extract_json_from_codeblock(text)  # type: ignore
+        except UnboundLocalError:
+            raise ValueError("Unable to extract JSON from completion text") from None
+
+        if strict:
+            return cls.model_validate_json(
+                extra_text, context=validation_context, strict=True
+            )
+        else:
+            # Allow control characters.
+            parsed = json.loads(extra_text, strict=False)
+            # Pydantic non-strict: https://docs.pydantic.dev/latest/concepts/strict_mode/
+            return cls.model_validate(parsed, context=validation_context, strict=False)
+
+    @classmethod
+    def parse_vertexai_tools(
+        cls: type[BaseModel],
+        completion: ChatCompletion,
+        validation_context: Optional[dict[str, Any]] = None,
+        strict: Optional[bool] = None,
+    ) -> BaseModel:
+        strict = False
+        tool_call = completion.candidates[0].content.parts[0].function_call.args  # type: ignore
+        model = {}
+        for field in tool_call:  # type: ignore
+            model[field] = tool_call[field]
+        return cls.model_validate(model, context=validation_context, strict=strict)
+
+    @classmethod
+    def parse_cohere_tools(
+        cls: type[BaseModel],
+        completion: ChatCompletion,
+        validation_context: Optional[dict[str, Any]] = None,
+        strict: Optional[bool] = None,
+    ) -> BaseModel:
+        text = cast(str, completion.text)  # type: ignore - TODO update with cohere specific types
+        extra_text = extract_json_from_codeblock(text)
+        return cls.model_validate_json(
+            extra_text, context=validation_context, strict=strict
+        )
+
+    @classmethod
+    def parse_functions(
+        cls: type[BaseModel],
+        completion: ChatCompletion,
+        validation_context: Optional[dict[str, Any]] = None,
+        strict: Optional[bool] = None,
+    ) -> BaseModel:
+        message = completion.choices[0].message
+        assert (
+            message.function_call.name == cls.openai_schema["name"]  # type: ignore[index]
+        ), "Function name does not match"
+        return cls.model_validate_json(
+            message.function_call.arguments,  # type: ignore[attr-defined]
+            context=validation_context,
+            strict=strict,
+        )
+
+    @classmethod
+    def parse_tools(
+        cls: type[BaseModel],
+        completion: ChatCompletion,
+        validation_context: Optional[dict[str, Any]] = None,
+        strict: Optional[bool] = None,
+    ) -> BaseModel:
+        message = completion.choices[0].message
+        assert (
+            len(message.tool_calls or []) == 1
+        ), "Instructor does not support multiple tool calls, use List[Model] instead."
+        tool_call = message.tool_calls[0]  # type: ignore
+        assert (
+            tool_call.function.name == cls.openai_schema["name"]  # type: ignore[index]
+        ), "Tool name does not match"
+        return cls.model_validate_json(
+            tool_call.function.arguments,  # type: ignore
+            context=validation_context,
+            strict=strict,
+        )
+
+    @classmethod
+    def parse_json(
+        cls: type[BaseModel],
+        completion: ChatCompletion,
+        validation_context: Optional[dict[str, Any]] = None,
+        strict: Optional[bool] = None,
+    ) -> BaseModel:
+        message = completion.choices[0].message.content or ""
+        message = extract_json_from_codeblock(message)
+
+        return cls.model_validate_json(
+            message,
+            context=validation_context,
+            strict=strict,
+        )
+
+
+def openai_schema(cls: type[BaseModel]) -> OpenAISchema:
+    if not issubclass(cls, BaseModel):
+        raise TypeError("Class must be a subclass of pydantic.BaseModel")
+
+    shema = wraps(cls, updated=())(
+        create_model(
+            cls.__name__ if hasattr(cls, "__name__") else str(cls),
+            __base__=(cls, OpenAISchema),
+        )
+    )
+    return cast(OpenAISchema, shema)
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/client_cohere.py
+=======
+from __future__ import annotations
+
+import cohere
+import instructor
+from functools import wraps
+from typing import (
+    TypeVar,
+    overload,
+)
+from typing import Any
+from typing_extensions import ParamSpec
+from pydantic import BaseModel
+from instructor.process_response import handle_response_model
+from instructor.retry import retry_async
+
+
+T_Model = TypeVar("T_Model", bound=BaseModel)
+T_ParamSpec = ParamSpec("T_ParamSpec")
+
+
+@overload
+def from_cohere(
+    client: cohere.Client,
+    mode: instructor.Mode = instructor.Mode.COHERE_TOOLS,
+    **kwargs: Any,
+) -> instructor.Instructor: ...
+
+
+@overload
+def from_cohere(
+    client: cohere.AsyncClient,
+    mode: instructor.Mode = instructor.Mode.COHERE_TOOLS,
+    **kwargs: Any,
+) -> instructor.AsyncInstructor: ...
+
+
+def from_cohere(
+    client: cohere.Client | cohere.AsyncClient,
+    mode: instructor.Mode = instructor.Mode.COHERE_TOOLS,
+    **kwargs: Any,
+):
+    assert mode in {
+        instructor.Mode.COHERE_TOOLS,
+    }, "Mode be one of {instructor.Mode.COHERE_TOOLS}"
+
+    assert isinstance(
+        client, (cohere.Client, cohere.AsyncClient)
+    ), "Client must be an instance of cohere.Cohere or cohere.AsyncCohere"
+
+    if isinstance(client, cohere.Client):
+        return instructor.Instructor(
+            client=client,
+            create=instructor.patch(create=client.chat, mode=mode),
+            provider=instructor.Provider.COHERE,
+            mode=mode,
+            **kwargs,
+        )
+
+    @wraps(client.chat)
+    async def new_create_async(
+        response_model: type[T_Model] | None = None,
+        validation_context: dict[str, Any] | None = None,
+        max_retries: int = 1,
+        *args: T_ParamSpec.args,
+        **kwargs: T_ParamSpec.kwargs,
+    ) -> T_Model:
+        prepared_response_model, new_kwargs = handle_response_model(
+            response_model=response_model,
+            mode=mode,
+            **kwargs,
+        )
+        response = await retry_async(
+            func=client.chat,
+            response_model=prepared_response_model,
+            validation_context=validation_context,
+            max_retries=max_retries,
+            args=args,
+            kwargs=new_kwargs,
+            mode=mode,
+        )
+        return response
+
+    return instructor.AsyncInstructor(
+        client=client,
+        create=new_create_async,
+        provider=instructor.Provider.COHERE,
+        mode=mode,
+        **kwargs,
+    )
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/__init__.py
+=======
+import importlib.util
+
+from .mode import Mode
+from .process_response import handle_response_model
+from .distil import FinetuneFormat, Instructions
+from .dsl import (
+    CitationMixin,
+    Maybe,
+    Partial,
+    IterableModel,
+    llm_validator,
+    openai_moderation,
+)
+from .function_calls import OpenAISchema, openai_schema
+from .patch import apatch, patch
+from .process_response import handle_parallel_model
+from .client import (
+    Instructor,
+    AsyncInstructor,
+    from_openai,
+    from_litellm,
+    Provider,
+)
+
+
+__all__ = [
+    "Instructor",
+    "from_openai",
+    "from_litellm",
+    "AsyncInstructor",
+    "Provider",
+    "OpenAISchema",
+    "CitationMixin",
+    "IterableModel",
+    "Maybe",
+    "Partial",
+    "openai_schema",
+    "Mode",
+    "patch",
+    "apatch",
+    "llm_validator",
+    "openai_moderation",
+    "FinetuneFormat",
+    "Instructions",
+    "handle_parallel_model",
+    "handle_response_model",
+]
+
+
+if importlib.util.find_spec("anthropic") is not None:
+    from .client_anthropic import from_anthropic
+
+    __all__ += ["from_anthropic"]
+
+if (
+    importlib.util.find_spec("google")
+    and importlib.util.find_spec("google.generativeai") is not None
+):
+    from .client_gemini import from_gemini
+
+    __all__ += ["from_gemini"]
+
+if importlib.util.find_spec("groq") is not None:
+    from .client_groq import from_groq
+
+    __all__ += ["from_groq"]
+
+if importlib.util.find_spec("mistralai") is not None:
+    from .client_mistral import from_mistral
+
+    __all__ += ["from_mistral"]
+
+if importlib.util.find_spec("cohere") is not None:
+    from .client_cohere import from_cohere
+
+    __all__ += ["from_cohere"]
+
+if importlib.util.find_spec("vertexai") is not None:
+    from .client_vertexai import from_vertexai
+
+    __all__ += ["from_vertexai"]
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/distil.py
+=======
+import enum
+import json
+import uuid
+import logging
+import inspect
+import functools
+
+from typing import (
+    Any,
+    Callable,
+    Optional,
+    TypeVar,
+    TypedDict,
+    Literal,
+    Union,
+)
+from typing_extensions import ParamSpec, NotRequired
+from openai.types.chat.chat_completion import ChatCompletion
+from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
+from pydantic import BaseModel, validate_call
+
+from openai import OpenAI
+from instructor.function_calls import openai_schema
+
+
+P = ParamSpec("P")
+T_Retval = TypeVar("T_Retval", bound=BaseModel)
+
+
+class OpenAIChatKwargs(TypedDict):
+    messages: list[ChatCompletionMessageParam]
+    functions: NotRequired[list[dict[str, Any]]]
+
+
+class FinetuneFormat(enum.Enum):
+    MESSAGES = "messages"
+    RAW = "raw"
+
+
+def get_signature_from_fn(fn: Callable[..., Any]) -> str:
+    """
+    Get the function signature as a string.
+
+    :Example:
+
+    >>> def my_function(a: int, b: int) -> int:
+    >>>     return a + b
+    >>>
+    >>> get_signature_from_fn(my_function)
+    "def my_function(a: int, b: int) -> int"
+
+    :param fn: Function to get the signature for.
+    :return: Function signature as a string.
+    """
+    sig = inspect.signature(fn)
+    lines = f"def {fn.__name__}{sig}"
+    docstring = inspect.getdoc(fn)
+    if docstring:
+        formatted_docstring = f'"""\n{docstring}\n"""'
+    else:
+        formatted_docstring = ""
+    return f"{lines}\n{formatted_docstring}"
+
+
+@functools.lru_cache
+def format_function(func: Callable[..., Any]) -> str:
+    """
+    Format a function as a string with docstring and body.
+    """
+    source_lines = inspect.getsourcelines(func)
+    definition = " ".join(source_lines[0]).strip()
+
+    docstring = inspect.getdoc(func)
+    if docstring:
+        formatted_docstring = f'"""\n{docstring}\n"""'
+    else:
+        formatted_docstring = ""
+
+    body = inspect.getsource(func)
+    body = body.replace(f"def {func.__name__}", "")
+
+    return f"{definition}\n{formatted_docstring}\n{body}"
+
+
+def is_return_type_base_model_or_instance(func: Callable[..., Any]) -> bool:
+    """
+    Check if the return type of a function is a pydantic BaseModel or an instance of it.
+
+    :param func: Function to check.
+    :return: True if the return type is a pydantic BaseModel or an instance of it.
+    """
+    return_type = inspect.signature(func).return_annotation
+    assert (
+        return_type != inspect.Signature.empty
+    ), "Must have a return type hint that is a pydantic BaseModel"
+    return inspect.isclass(return_type) and issubclass(return_type, BaseModel)
+
+
+class Instructions:
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        id: Optional[str] = None,
+        log_handlers: Optional[list[logging.Handler]] = None,
+        finetune_format: FinetuneFormat = FinetuneFormat.MESSAGES,
+        indent: int = 2,
+        include_code_body: bool = False,
+        openai_client: Optional[OpenAI] = None,
+    ) -> None:
+        """
+        Instructions for distillation and dispatch.
+
+        :param name: Name of the instructions.
+        :param id: ID of the instructions.
+        :param log_handlers: List of log handlers to use.
+        :param finetune_format: Format to use for finetuning.
+        :param indent: Indentation to use for finetuning.
+        :param include_code_body: Whether to include the code body in the finetuning.
+        """
+        self.name = name
+        self.id = id or str(uuid.uuid4())
+        self.unique_id = str(uuid.uuid4())
+        self.finetune_format = finetune_format
+        self.indent = indent
+        self.include_code_body = include_code_body
+        self.client = openai_client or OpenAI()
+
+        self.logger = logging.getLogger(self.name)
+        for handler in log_handlers or []:
+            self.logger.addHandler(handler)
+
+    def distil(
+        self,
+        *args: Any,
+        name: Optional[str] = None,
+        mode: Literal["distil", "dispatch"] = "distil",
+        model: str = "gpt-3.5-turbo",
+        fine_tune_format: Optional[FinetuneFormat] = None,
+    ) -> Union[
+        Callable[P, Union[T_Retval, ChatCompletion]],
+        Callable[[Callable[P, T_Retval]], Callable[P, Union[T_Retval, ChatCompletion]]],
+    ]:
+        """
+        Decorator to track the function call and response, supports distillation and dispatch modes.
+
+        If used without arguments, it must be used as a decorator.
+
+        :Example:
+
+        >>> @distil
+        >>> def my_function() -> MyModel:
+        >>>     return MyModel()
+        >>>
+        >>> @distil(name="my_function")
+        >>> def my_function() -> MyModel:
+        >>>     return MyModel()
+
+        :param fn: Function to track.
+        :param name: Name of the function to track. Defaults to the function name.
+        :param mode: Mode to use for distillation. Defaults to "distil".
+        """
+        allowed_modes = {"distil", "dispatch"}
+        assert mode in allowed_modes, f"Must be in {allowed_modes}"
+
+        if fine_tune_format is None:
+            fine_tune_format = self.finetune_format
+
+        def _wrap_distil(
+            fn: Callable[P, T_Retval],
+        ) -> Callable[P, Union[T_Retval, ChatCompletion]]:
+            msg = f"Return type hint for {fn} must subclass `pydantic.BaseModel'"
+            assert is_return_type_base_model_or_instance(fn), msg
+            return_base_model = inspect.signature(fn).return_annotation
+
+            @functools.wraps(fn)
+            def _dispatch(*args: P.args, **kwargs: P.kwargs) -> ChatCompletion:
+                openai_kwargs = self.openai_kwargs(
+                    name=name if name else fn.__name__,
+                    fn=fn,
+                    args=args,
+                    kwargs=kwargs,
+                    base_model=return_base_model,
+                )
+                return self.client.chat.completions.create(
+                    **openai_kwargs,
+                    model=model,
+                    response_model=return_base_model,  # type: ignore - TODO figure out why `response_model` is not recognized
+                )
+
+            @functools.wraps(fn)
+            def _distil(*args: P.args, **kwargs: P.kwargs) -> T_Retval:
+                resp = fn(*args, **kwargs)
+                self.track(
+                    fn,
+                    args,
+                    kwargs,
+                    resp,
+                    name=name,
+                    finetune_format=fine_tune_format,
+                )
+                return resp
+
+            return _dispatch if mode == "dispatch" else _distil
+
+        if len(args) == 1 and callable(args[0]):
+            return _wrap_distil(args[0])
+
+        return _wrap_distil
+
+    @validate_call
+    def track(
+        self,
+        fn: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        resp: BaseModel,
+        name: Optional[str] = None,
+        finetune_format: FinetuneFormat = FinetuneFormat.MESSAGES,
+    ) -> None:
+        """
+        Track the function call and response in a log file, later used for finetuning.
+
+        :param fn: Function to track.
+        :param args: Arguments passed to the function.
+        :param kwargs: Keyword arguments passed to the function.
+        :param resp: Response returned by the function.
+        :param name: Name of the function to track. Defaults to the function name.
+        :param finetune_format: Format to use for finetuning. Defaults to "raw".
+        """
+        name = name if name else fn.__name__
+        base_model = type(resp)
+
+        if finetune_format == FinetuneFormat.MESSAGES:
+            openai_function_call = openai_schema(base_model).openai_schema
+            openai_kwargs = self.openai_kwargs(name, fn, args, kwargs, base_model)
+            openai_kwargs["messages"].append(
+                {
+                    "role": "assistant",
+                    "function_call": {
+                        "name": base_model.__name__,
+                        "arguments": resp.model_dump_json(indent=self.indent),
+                    },
+                }
+            )
+            openai_kwargs["functions"] = [openai_function_call]
+            self.logger.info(json.dumps(openai_kwargs))
+
+        if finetune_format == FinetuneFormat.RAW:
+            function_body = dict(
+                fn_name=name,
+                fn_repr=format_function(fn),
+                args=args,
+                kwargs=kwargs,
+                resp=resp.model_dump(),
+                schema=base_model.model_json_schema(),
+            )
+            self.logger.info(json.dumps(function_body))
+
+    def openai_kwargs(
+        self,
+        name: str,
+        fn: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        base_model: type[BaseModel],
+    ) -> OpenAIChatKwargs:
+        if self.include_code_body:
+            func_def = format_function(fn)
+        else:
+            func_def = get_signature_from_fn(fn)
+
+        str_args = ", ".join(map(str, args))
+        str_kwargs = (
+            ", ".join(f"{k}={json.dumps(v)}" for k, v in kwargs.items()) or None
+        )
+        call_args = ", ".join(filter(None, [str_args, str_kwargs]))
+
+        function_body: OpenAIChatKwargs = {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": f"Predict the results of this function:\n\n{func_def}",
+                },
+                {
+                    "role": "user",
+                    "content": f"Return `{name}({call_args})`",
+                },
+            ],
+        }
+        return function_body
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/client.py
+=======
+from __future__ import annotations
+
+import openai
+import inspect
+import instructor
+from .utils import Provider, get_provider
+from openai.types.chat import ChatCompletionMessageParam
+from typing import (
+    TypeVar,
+    Callable,
+    overload,
+    Union,
+    Any,
+)
+from collections.abc import Generator, Iterable, Awaitable, AsyncGenerator
+from typing_extensions import Self
+from pydantic import BaseModel
+from instructor.dsl.partial import Partial
+
+
+T = TypeVar("T", bound=Union[BaseModel, "Iterable[Any]", "Partial[Any]"])
+
+
+class Instructor:
+    client: Any | None
+    create_fn: Callable[..., Any]
+    mode: instructor.Mode
+    default_model: str | None = None
+    provider: Provider
+
+    def __init__(
+        self,
+        client: Any | None,
+        create: Callable[..., Any],
+        mode: instructor.Mode = instructor.Mode.TOOLS,
+        provider: Provider = Provider.OPENAI,
+        **kwargs: Any,
+    ):
+        self.client = client
+        self.create_fn = create
+        self.mode = mode
+        self.kwargs = kwargs
+        self.provider = provider
+
+    @property
+    def chat(self) -> Self:
+        return self
+
+    @property
+    def completions(self) -> Self:
+        return self
+
+    @property
+    def messages(self) -> Self:
+        return self
+
+    @overload
+    def create(
+        self: AsyncInstructor,
+        response_model: type[T],
+        messages: list[ChatCompletionMessageParam],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> Awaitable[T]: ...
+
+    @overload
+    def create(
+        self: Self,
+        response_model: type[T],
+        messages: list[ChatCompletionMessageParam],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> T: ...
+
+    # TODO: we should overload a case where response_model is None
+    def create(
+        self,
+        response_model: type[T],
+        messages: list[ChatCompletionMessageParam],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> T | Awaitable[T]:
+        kwargs = self.handle_kwargs(kwargs)
+
+        return self.create_fn(
+            response_model=response_model,
+            messages=messages,
+            max_retries=max_retries,
+            validation_context=validation_context,
+            strict=strict,
+            **kwargs,
+        )
+
+    @overload
+    def create_partial(
+        self: AsyncInstructor,
+        response_model: type[T],
+        messages: list[ChatCompletionMessageParam],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> AsyncGenerator[T, None]: ...
+
+    @overload
+    def create_partial(
+        self: Self,
+        response_model: type[T],
+        messages: list[ChatCompletionMessageParam],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> Generator[T, None, None]: ...
+
+    def create_partial(
+        self,
+        response_model: type[T],
+        messages: list[ChatCompletionMessageParam],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> Generator[T, None, None] | AsyncGenerator[T, None]:
+        kwargs["stream"] = True
+
+        kwargs = self.handle_kwargs(kwargs)
+
+        response_model = instructor.Partial[response_model]  # type: ignore
+        return self.create_fn(
+            messages=messages,
+            response_model=response_model,
+            max_retries=max_retries,
+            validation_context=validation_context,
+            strict=strict,
+            **kwargs,
+        )
+
+    @overload
+    def create_iterable(
+        self: AsyncInstructor,
+        messages: list[ChatCompletionMessageParam],
+        response_model: type[T],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> AsyncGenerator[T, None]: ...
+
+    @overload
+    def create_iterable(
+        self: Self,
+        messages: list[ChatCompletionMessageParam],
+        response_model: type[T],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> Generator[T, None, None]: ...
+
+    def create_iterable(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        response_model: type[T],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> Generator[T, None, None] | AsyncGenerator[T, None]:
+        assert self.provider != Provider.ANTHROPIC, "Anthropic doesn't support iterable"
+
+        kwargs["stream"] = True
+        kwargs = self.handle_kwargs(kwargs)
+
+        response_model = Iterable[response_model]  # type: ignore
+        return self.create_fn(
+            messages=messages,
+            response_model=response_model,
+            max_retries=max_retries,
+            validation_context=validation_context,
+            strict=strict,
+            **kwargs,
+        )
+
+    @overload
+    def create_with_completion(
+        self: AsyncInstructor,
+        messages: list[ChatCompletionMessageParam],
+        response_model: type[T],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> Awaitable[tuple[T, Any]]: ...
+
+    @overload
+    def create_with_completion(
+        self: Self,
+        messages: list[ChatCompletionMessageParam],
+        response_model: type[T],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> tuple[T, Any]: ...
+
+    def create_with_completion(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        response_model: type[T],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> tuple[T, Any] | Awaitable[tuple[T, Any]]:
+        kwargs = self.handle_kwargs(kwargs)
+        model = self.create_fn(
+            messages=messages,
+            response_model=response_model,
+            max_retries=max_retries,
+            validation_context=validation_context,
+            strict=strict,
+            **kwargs,
+        )
+        return model, model._raw_response
+
+    def handle_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        for key, value in self.kwargs.items():
+            if key not in kwargs:
+                kwargs[key] = value
+        return kwargs
+
+
+class AsyncInstructor(Instructor):
+    client: Any | None
+    create_fn: Callable[..., Any]
+    mode: instructor.Mode
+    default_model: str | None = None
+    provider: Provider
+
+    def __init__(
+        self,
+        client: Any | None,
+        create: Callable[..., Any],
+        mode: instructor.Mode = instructor.Mode.TOOLS,
+        provider: Provider = Provider.OPENAI,
+        **kwargs: Any,
+    ):
+        self.client = client
+        self.create_fn = create
+        self.mode = mode
+        self.kwargs = kwargs
+        self.provider = provider
+
+    async def create(
+        self,
+        response_model: type[T],
+        messages: list[ChatCompletionMessageParam],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> T:
+        kwargs = self.handle_kwargs(kwargs)
+        return await self.create_fn(
+            response_model=response_model,
+            validation_context=validation_context,
+            max_retries=max_retries,
+            messages=messages,
+            strict=strict,
+            **kwargs,
+        )
+
+    async def create_partial(
+        self,
+        response_model: type[T],
+        messages: list[ChatCompletionMessageParam],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> AsyncGenerator[T, None]:
+        assert self.provider != Provider.ANTHROPIC, "Anthropic doesn't support partial"
+
+        kwargs = self.handle_kwargs(kwargs)
+        kwargs["stream"] = True
+        async for item in await self.create_fn(
+            response_model=instructor.Partial[response_model],  # type: ignore
+            validation_context=validation_context,
+            max_retries=max_retries,
+            messages=messages,
+            strict=strict,
+            **kwargs,
+        ):
+            yield item
+
+    async def create_iterable(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        response_model: type[T],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> AsyncGenerator[T, None]:
+        kwargs = self.handle_kwargs(kwargs)
+        kwargs["stream"] = True
+        async for item in await self.create_fn(
+            response_model=Iterable[response_model],
+            validation_context=validation_context,
+            max_retries=max_retries,
+            messages=messages,
+            strict=strict,
+            **kwargs,
+        ):
+            yield item
+
+    async def create_with_completion(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        response_model: type[T],
+        max_retries: int = 3,
+        validation_context: dict[str, Any] | None = None,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> tuple[T, Any]:
+        kwargs = self.handle_kwargs(kwargs)
+        response = await self.create_fn(
+            response_model=response_model,
+            validation_context=validation_context,
+            max_retries=max_retries,
+            messages=messages,
+            strict=strict,
+            **kwargs,
+        )
+        return response, response._raw_response
+
+
+@overload
+def from_openai(
+    client: openai.OpenAI,
+    mode: instructor.Mode = instructor.Mode.TOOLS,
+    **kwargs: Any,
+) -> Instructor:
+    pass
+
+
+@overload
+def from_openai(
+    client: openai.AsyncOpenAI,
+    mode: instructor.Mode = instructor.Mode.TOOLS,
+    **kwargs: Any,
+) -> AsyncInstructor:
+    pass
+
+
+def from_openai(
+    client: openai.OpenAI | openai.AsyncOpenAI,
+    mode: instructor.Mode = instructor.Mode.TOOLS,
+    **kwargs: Any,
+) -> Instructor | AsyncInstructor:
+    if hasattr(client, "base_url"):
+        provider = get_provider(str(client.base_url))
+    else:
+        provider = Provider.OPENAI
+
+    if not isinstance(client, (openai.OpenAI, openai.AsyncOpenAI)):
+        import warnings
+
+        warnings.warn(
+            "Client should be an instance of openai.OpenAI or openai.AsyncOpenAI. Unexpected behavior may occur with other client types.",
+            stacklevel=2,
+        )
+
+    if provider in {Provider.ANYSCALE, Provider.TOGETHER}:
+        assert mode in {
+            instructor.Mode.TOOLS,
+            instructor.Mode.JSON,
+            instructor.Mode.JSON_SCHEMA,
+            instructor.Mode.MD_JSON,
+        }
+
+    if provider in {Provider.DATABRICKS}:
+        assert mode in {
+            instructor.Mode.MD_JSON
+        }, "Databricks provider only supports `MD_JSON` mode."
+
+    if provider in {Provider.OPENAI}:
+        assert mode in {
+            instructor.Mode.TOOLS,
+            instructor.Mode.JSON,
+            instructor.Mode.FUNCTIONS,
+            instructor.Mode.PARALLEL_TOOLS,
+            instructor.Mode.MD_JSON,
+        }
+
+    if isinstance(client, openai.OpenAI):
+        return Instructor(
+            client=client,
+            create=instructor.patch(create=client.chat.completions.create, mode=mode),
+            mode=mode,
+            provider=provider,
+            **kwargs,
+        )
+
+    if isinstance(client, openai.AsyncOpenAI):
+        return AsyncInstructor(
+            client=client,
+            create=instructor.patch(create=client.chat.completions.create, mode=mode),
+            mode=mode,
+            provider=provider,
+            **kwargs,
+        )
+
+
+@overload
+def from_litellm(
+    completion: Callable[..., Any],
+    mode: instructor.Mode = instructor.Mode.TOOLS,
+    **kwargs: Any,
+) -> Instructor: ...
+
+
+@overload
+def from_litellm(
+    completion: Awaitable[Any],
+    mode: instructor.Mode = instructor.Mode.TOOLS,
+    **kwargs: Any,
+) -> AsyncInstructor:
+    pass
+
+
+def from_litellm(
+    completion: Callable[..., Any] | Awaitable[Any],
+    mode: instructor.Mode = instructor.Mode.TOOLS,
+    **kwargs: Any,
+) -> Instructor | AsyncInstructor:
+    is_async = inspect.isawaitable(completion)
+
+    if not is_async:
+        return Instructor(
+            client=None,
+            create=instructor.patch(create=completion, mode=mode),
+            mode=mode,
+            **kwargs,
+        )
+    else:
+        return AsyncInstructor(
+            client=None,
+            create=instructor.patch(create=completion, mode=mode),
+            mode=mode,
+            **kwargs,
+        )
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/patch.py
+=======
+# type: ignore[all]
+from functools import wraps
+from typing import (
+    Callable,
+    Protocol,
+    TypeVar,
+    Union,
+    overload,
+)
+from collections.abc import Awaitable
+from typing_extensions import ParamSpec
+
+from openai import AsyncOpenAI, OpenAI
+from pydantic import BaseModel
+
+from instructor.process_response import handle_response_model
+from instructor.retry import retry_async, retry_sync
+from instructor.utils import is_async
+
+from instructor.mode import Mode
+import logging
+
+logger = logging.getLogger("instructor")
+
+T_Model = TypeVar("T_Model", bound=BaseModel)
+T_Retval = TypeVar("T_Retval")
+T_ParamSpec = ParamSpec("T_ParamSpec")
+
+
+class InstructorChatCompletionCreate(Protocol):
+    def __call__(
+        self,
+        response_model: type[T_Model] = None,
+        validation_context: dict = None,
+        max_retries: int = 1,
+        *args: T_ParamSpec.args,
+        **kwargs: T_ParamSpec.kwargs,
+    ) -> T_Model: ...
+
+
+class AsyncInstructorChatCompletionCreate(Protocol):
+    async def __call__(
+        self,
+        response_model: type[T_Model] = None,
+        validation_context: dict = None,
+        max_retries: int = 1,
+        *args: T_ParamSpec.args,
+        **kwargs: T_ParamSpec.kwargs,
+    ) -> T_Model: ...
+
+
+@overload
+def patch(
+    client: OpenAI,
+    mode: Mode = Mode.TOOLS,
+) -> OpenAI: ...
+
+
+@overload
+def patch(
+    client: AsyncOpenAI,
+    mode: Mode = Mode.TOOLS,
+) -> AsyncOpenAI: ...
+
+
+@overload
+def patch(
+    create: Callable[T_ParamSpec, T_Retval],
+    mode: Mode = Mode.TOOLS,
+) -> InstructorChatCompletionCreate: ...
+
+
+@overload
+def patch(
+    create: Awaitable[T_Retval],
+    mode: Mode = Mode.TOOLS,
+) -> InstructorChatCompletionCreate: ...
+
+
+def patch(
+    client: Union[OpenAI, AsyncOpenAI] = None,
+    create: Callable[T_ParamSpec, T_Retval] = None,
+    mode: Mode = Mode.TOOLS,
+) -> Union[OpenAI, AsyncOpenAI]:
+    """
+    Patch the `client.chat.completions.create` method
+
+    Enables the following features:
+
+    - `response_model` parameter to parse the response from OpenAI's API
+    - `max_retries` parameter to retry the function if the response is not valid
+    - `validation_context` parameter to validate the response using the pydantic model
+    - `strict` parameter to use strict json parsing
+    """
+
+    logger.debug(f"Patching `client.chat.completions.create` with {mode=}")
+
+    if create is not None:
+        func = create
+    elif client is not None:
+        func = client.chat.completions.create
+    else:
+        raise ValueError("Either client or create must be provided")
+
+    func_is_async = is_async(func)
+
+    @wraps(func)
+    async def new_create_async(
+        response_model: type[T_Model] = None,
+        validation_context: dict = None,
+        max_retries: int = 1,
+        strict: bool = True,
+        *args: T_ParamSpec.args,
+        **kwargs: T_ParamSpec.kwargs,
+    ) -> T_Model:
+        response_model, new_kwargs = handle_response_model(
+            response_model=response_model, mode=mode, **kwargs
+        )
+        response = await retry_async(
+            func=func,
+            response_model=response_model,
+            validation_context=validation_context,
+            max_retries=max_retries,
+            args=args,
+            kwargs=new_kwargs,
+            strict=strict,
+            mode=mode,
+        )
+        return response
+
+    @wraps(func)
+    def new_create_sync(
+        response_model: type[T_Model] = None,
+        validation_context: dict = None,
+        max_retries: int = 1,
+        strict: bool = True,
+        *args: T_ParamSpec.args,
+        **kwargs: T_ParamSpec.kwargs,
+    ) -> T_Model:
+        response_model, new_kwargs = handle_response_model(
+            response_model=response_model, mode=mode, **kwargs
+        )
+        response = retry_sync(
+            func=func,
+            response_model=response_model,
+            validation_context=validation_context,
+            max_retries=max_retries,
+            args=args,
+            strict=strict,
+            kwargs=new_kwargs,
+            mode=mode,
+        )
+        return response
+
+    new_create = new_create_async if func_is_async else new_create_sync
+
+    if client is not None:
+        client.chat.completions.create = new_create
+        return client
+    else:
+        return new_create
+
+
+def apatch(client: AsyncOpenAI, mode: Mode = Mode.TOOLS) -> AsyncOpenAI:
+    """
+    No longer necessary, use `patch` instead.
+
+    Patch the `client.chat.completions.create` method
+
+    Enables the following features:
+
+    - `response_model` parameter to parse the response from OpenAI's API
+    - `max_retries` parameter to retry the function if the response is not valid
+    - `validation_context` parameter to validate the response using the pydantic model
+    - `strict` parameter to use strict json parsing
+    """
+    import warnings
+
+    warnings.warn(
+        "apatch is deprecated, use patch instead", DeprecationWarning, stacklevel=2
+    )
+    return patch(client, mode=mode)
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/utils.py
+=======
+from __future__ import annotations
+
+import inspect
+import json
+import logging
+from collections.abc import AsyncGenerator, Generator, Iterable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Generic,
+    Protocol,
+    TypeVar,
+)
+
+from openai.types import CompletionUsage as OpenAIUsage
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionMessage,
+    ChatCompletionMessageParam,
+)
+
+if TYPE_CHECKING:
+    from anthropic.types import Usage as AnthropicUsage
+
+
+logger = logging.getLogger("instructor")
+R_co = TypeVar("R_co", covariant=True)
+T_Model = TypeVar("T_Model", bound="Response")
+
+from enum import Enum
+
+
+class Response(Protocol):
+    usage: OpenAIUsage | AnthropicUsage
+
+
+class Provider(Enum):
+    OPENAI = "openai"
+    VERTEXAI = "vertexai"
+    ANTHROPIC = "anthropic"
+    ANYSCALE = "anyscale"
+    TOGETHER = "together"
+    GROQ = "groq"
+    MISTRAL = "mistral"
+    COHERE = "cohere"
+    GEMINI = "gemini"
+    DATABRICKS = "databricks"
+    UNKNOWN = "unknown"
+
+
+def get_provider(base_url: str) -> Provider:
+    if "anyscale" in str(base_url):
+        return Provider.ANYSCALE
+    elif "together" in str(base_url):
+        return Provider.TOGETHER
+    elif "anthropic" in str(base_url):
+        return Provider.ANTHROPIC
+    elif "groq" in str(base_url):
+        return Provider.GROQ
+    elif "openai" in str(base_url):
+        return Provider.OPENAI
+    elif "mistral" in str(base_url):
+        return Provider.MISTRAL
+    elif "cohere" in str(base_url):
+        return Provider.COHERE
+    elif "gemini" in str(base_url):
+        return Provider.GEMINI
+    elif "databricks" in str(base_url):
+        return Provider.DATABRICKS
+    elif "vertexai" in str(base_url):
+        return Provider.VERTEXAI
+    return Provider.UNKNOWN
+
+
+def extract_json_from_codeblock(content: str) -> str:
+    first_paren = content.find("{")
+    last_paren = content.rfind("}")
+    return content[first_paren : last_paren + 1]
+
+
+def extract_json_from_stream(chunks: Iterable[str]) -> Generator[str, None, None]:
+    capturing = False
+    brace_count = 0
+    for chunk in chunks:
+        for char in chunk:
+            if char == "{":
+                capturing = True
+                brace_count += 1
+                yield char
+            elif char == "}" and capturing:
+                brace_count -= 1
+                yield char
+                if brace_count == 0:
+                    capturing = False
+                    break  # Cease yielding upon closing the current JSON object
+            elif capturing:
+                yield char
+
+
+async def extract_json_from_stream_async(
+    chunks: AsyncGenerator[str, None],
+) -> AsyncGenerator[str, None]:
+    capturing = False
+    brace_count = 0
+    async for chunk in chunks:
+        for char in chunk:
+            if char == "{":
+                capturing = True
+                brace_count += 1
+                yield char
+            elif char == "}" and capturing:
+                brace_count -= 1
+                yield char
+                if brace_count == 0:
+                    capturing = False
+                    break  # Cease yielding upon closing the current JSON object
+            elif capturing:
+                yield char
+
+
+def update_total_usage(
+    response: T_Model,
+    total_usage: OpenAIUsage | AnthropicUsage,
+) -> T_Model | ChatCompletion:
+    response_usage = getattr(response, "usage", None)
+    if isinstance(response_usage, OpenAIUsage) and isinstance(total_usage, OpenAIUsage):
+        total_usage.completion_tokens += response_usage.completion_tokens or 0
+        total_usage.prompt_tokens += response_usage.prompt_tokens or 0
+        total_usage.total_tokens += response_usage.total_tokens or 0
+        response.usage = total_usage  # Replace each response usage with the total usage
+        return response
+
+    # Anthropic usage.
+    try:
+        from anthropic.types import Usage as AnthropicUsage
+
+        if isinstance(response_usage, AnthropicUsage) and isinstance(
+            total_usage, AnthropicUsage
+        ):
+            total_usage.input_tokens += response_usage.input_tokens or 0
+            total_usage.output_tokens += response_usage.output_tokens or 0
+            response.usage = total_usage
+            return response
+    except ImportError:
+        pass
+
+    logger.debug("No compatible response.usage found, token usage not updated.")
+    return response
+
+
+def dump_message(message: ChatCompletionMessage) -> ChatCompletionMessageParam:
+    """Dumps a message to a dict, to be returned to the OpenAI API.
+    Workaround for an issue with the OpenAI API, where the `tool_calls` field isn't allowed to be present in requests
+    if it isn't used.
+    """
+    ret: ChatCompletionMessageParam = {
+        "role": message.role,
+        "content": message.content or "",
+    }
+    if hasattr(message, "tool_calls") and message.tool_calls is not None:
+        ret["tool_calls"] = message.model_dump()["tool_calls"]
+    if (
+        hasattr(message, "function_call")
+        and message.function_call is not None
+        and ret["content"]
+    ):
+        ret["content"] += json.dumps(message.model_dump()["function_call"])
+    return ret
+
+
+def is_async(func: Callable[..., Any]) -> bool:
+    """Returns true if the callable is async, accounting for wrapped callables"""
+    is_coroutine = inspect.iscoroutinefunction(func)
+    while hasattr(func, "__wrapped__"):
+        func = func.__wrapped__  # type: ignore - dynamic
+        is_coroutine = is_coroutine or inspect.iscoroutinefunction(func)
+    return is_coroutine
+
+
+def merge_consecutive_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # merge all consecutive user messages into a single message
+    new_messages: list[dict[str, Any]] = []
+    # Detect whether all messages have a flat content (i.e. all string)
+    # Some providers require content to be a string, so we need to check that and behave accordingly
+    flat_string = all(isinstance(m["content"], str) for m in messages)
+    for message in messages:
+        new_content = message["content"]
+        if not flat_string and isinstance(new_content, str):
+            # If content is not flat, transform it into a list of text
+            new_content = [{"type": "text", "text": new_content}]
+
+        if len(new_messages) > 0 and message["role"] == new_messages[-1]["role"]:
+            if flat_string:
+                # New content is a string
+                new_messages[-1]["content"] += f"\n\n{new_content}"
+            else:
+                # New content is a list
+                new_messages[-1]["content"].extend(new_content)
+        else:
+            new_messages.append(
+                {
+                    "role": message["role"],
+                    "content": new_content,
+                }
+            )
+
+    return new_messages
+
+
+class classproperty(Generic[R_co]):
+    """Descriptor for class-level properties.
+
+    Examples:
+        >>> from instructor.utils import classproperty
+
+        >>> class MyClass:
+        ...     @classproperty
+        ...     def my_property(cls):
+        ...         return cls
+
+        >>> assert MyClass.my_property
+    """
+
+    def __init__(self, method: Callable[[Any], R_co]) -> None:
+        self.cproperty = method
+
+    def __get__(self, instance: object, cls: type[Any]) -> R_co:
+        return self.cproperty(cls)
+
+
+def transform_to_gemini_prompt(
+    messages_chatgpt: list[ChatCompletionMessageParam],
+) -> list[dict[str, Any]]:
+    messages_gemini: list[dict[str, Any]] = []
+    system_prompt = ""
+    for message in messages_chatgpt:
+        if message["role"] == "system":
+            system_prompt = message["content"]
+        elif message["role"] == "user":
+            messages_gemini.append(
+                {"role": "user", "parts": [message.get("content", "")]}
+            )
+        elif message["role"] == "assistant":
+            messages_gemini.append(
+                {"role": "model", "parts": [message.get("content", "")]}
+            )
+    if system_prompt:
+        messages_gemini[0]["parts"].insert(0, f"*{system_prompt}*")
+
+    return messages_gemini
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/exceptions.py
+=======
+from __future__ import annotations
+
+from typing import Any
+
+
+class IncompleteOutputException(Exception):
+    """Exception raised when the output from LLM is incomplete due to max tokens limit reached."""
+
+    def __init__(
+        self,
+        *args: list[Any],
+        last_completion: Any | None = None,
+        message: str = "The output is incomplete due to a max_tokens length limit.",
+        **kwargs: dict[str, Any],
+    ):
+        self.last_completion = last_completion
+        super().__init__(message, *args, **kwargs)
+
+
+class InstructorRetryException(Exception):
+    def __init__(
+        self,
+        *args: list[Any],
+        last_completion: Any | None = None,
+        messages: list[Any] | None = None,
+        n_attempts: int,
+        total_usage: int,
+        **kwargs: dict[str, Any],
+    ):
+        self.last_completion = last_completion
+        self.messages = messages
+        self.n_attempts = n_attempts
+        self.total_usage = total_usage
+        super().__init__(*args, **kwargs)
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/cli/jobs.py
+=======
+from typing import Optional, TypedDict
+from openai import OpenAI
+
+from openai.types.fine_tuning.job_create_params import Hyperparameters
+import typer
+import time
+from rich.live import Live
+from rich.table import Table
+from rich.console import Console
+from datetime import datetime
+from openai.types.fine_tuning import FineTuningJob
+
+client = OpenAI()
+app = typer.Typer()
+console = Console()
+
+
+class FuneTuningParams(TypedDict, total=False):
+    hyperparameters: Hyperparameters
+    validation_file: Optional[str]
+    suffix: Optional[str]
+
+
+def generate_table(jobs: list[FineTuningJob]) -> Table:
+    # Sorting the jobs by creation time
+    jobs = sorted(jobs, key=lambda x: x.created_at, reverse=True)
+
+    table = Table(
+        title="OpenAI Fine Tuning Job Monitoring",
+        caption="Automatically refreshes every 5 seconds, press Ctrl+C to exit",
+    )
+
+    table.add_column("Job ID", style="dim")
+    table.add_column("Status")
+    table.add_column("Creation Time", justify="right")
+    table.add_column("Completion Time", justify="right")
+    table.add_column("Model Name")
+    table.add_column("File ID")
+    table.add_column("Epochs")
+    table.add_column("Base Model")
+
+    for job in jobs:
+        status_emoji = {
+            "running": "⏳",
+            "succeeded": "✅",
+            "failed": "❌",
+            "cancelled": "🚫",
+        }.get(job.status, "❓")
+
+        finished_at = (
+            str(datetime.fromtimestamp(job.finished_at)) if job.finished_at else "N/A"
+        )
+
+        table.add_row(
+            job.id,
+            f"{status_emoji} [{status_color(job.status)}]{job.status}[/]",
+            str(datetime.fromtimestamp(job.created_at)),
+            finished_at,
+            job.fine_tuned_model,
+            job.training_file,
+            str(job.hyperparameters.n_epochs),
+            job.model,
+        )
+
+    return table
+
+
+def status_color(status: str) -> str:
+    return {"running": "yellow", "succeeded": "green", "failed": "red"}.get(
+        status, "white"
+    )
+
+
+def get_jobs(limit: int = 5) -> list[FineTuningJob]:
+    return client.fine_tuning.jobs.list(limit=limit).data
+
+
+def get_file_status(file_id: str) -> str:
+    response = client.files.retrieve(file_id)
+    return response.status
+
+
+@app.command(
+    name="list",
+    help="Monitor the status of the most recent fine-tuning jobs.",
+)
+def watch(
+    limit: int = typer.Option(5, help="Limit the number of jobs to monitor"),
+    poll: int = typer.Option(5, help="Polling interval in seconds"),
+    screen: bool = typer.Option(False, help="Enable or disable screen output"),
+) -> None:
+    """
+    Monitor the status of the most recent fine-tuning jobs.
+    """
+    jobs = get_jobs(limit=limit)
+    with Live(generate_table(jobs), refresh_per_second=2, screen=screen) as live_table:
+        while True:
+            jobs = get_jobs(limit=limit)
+            live_table.update(generate_table(jobs))
+            time.sleep(poll)
+
+
+@app.command(
+    help="Create a fine-tuning job from an existing ID.",
+)
+def create_from_id(
+    id: str = typer.Argument(help="ID of the existing fine-tuning job"),
+    model: str = typer.Option("gpt-3.5-turbo", help="Model to use for fine-tuning"),
+    n_epochs: Optional[int] = typer.Option(
+        None, help="Number of epochs for fine-tuning", show_default=False
+    ),
+    batch_size: Optional[int] = typer.Option(
+        None, help="Batch size for fine-tuning", show_default=False
+    ),
+    learning_rate_multiplier: Optional[float] = typer.Option(
+        None, help="Learning rate multiplier for fine-tuning", show_default=False
+    ),
+    validation_file_id: Optional[str] = typer.Option(
+        None, help="ID of the uploaded validation file"
+    ),
+) -> None:
+    hyperparameters_dict: Hyperparameters = {}
+    if n_epochs is not None:
+        hyperparameters_dict["n_epochs"] = n_epochs
+    if batch_size is not None:
+        hyperparameters_dict["batch_size"] = batch_size
+    if learning_rate_multiplier is not None:
+        hyperparameters_dict["learning_rate_multiplier"] = learning_rate_multiplier
+
+    with console.status(
+        f"[bold green]Creating fine-tuning job from ID {id}...", spinner="dots"
+    ):
+        job = client.fine_tuning.jobs.create(
+            training_file=id,
+            model=model,
+            hyperparameters=hyperparameters_dict,
+            validation_file=validation_file_id if validation_file_id else None,
+        )
+        console.log(f"[bold green]Fine-tuning job created with ID: {job.id}")
+    watch(limit=5, poll=2, screen=False)
+
+
+@app.command(
+    help="Create a fine-tuning job from a file.",
+)
+def create_from_file(
+    file: str = typer.Argument(help="Path to the file for fine-tuning"),
+    model: str = typer.Option("gpt-3.5-turbo", help="Model to use for fine-tuning"),
+    poll: int = typer.Option(2, help="Polling interval in seconds"),
+    n_epochs: Optional[int] = typer.Option(
+        None, help="Number of epochs for fine-tuning", show_default=False
+    ),
+    batch_size: Optional[int] = typer.Option(
+        None, help="Batch size for fine-tuning", show_default=False
+    ),
+    learning_rate_multiplier: Optional[float] = typer.Option(
+        None, help="Learning rate multiplier for fine-tuning", show_default=False
+    ),
+    validation_file: Optional[str] = typer.Option(
+        None, help="Path to the validation file"
+    ),
+    model_suffix: Optional[str] = typer.Option(
+        None, help="Suffix to identify the model"
+    ),
+) -> None:
+    hyperparameters_dict: Hyperparameters = {}
+    if n_epochs is not None:
+        hyperparameters_dict["n_epochs"] = n_epochs
+    if batch_size is not None:
+        hyperparameters_dict["batch_size"] = batch_size
+    if learning_rate_multiplier is not None:
+        hyperparameters_dict["learning_rate_multiplier"] = learning_rate_multiplier
+
+    with open(file, "rb") as file_buffer:
+        response = client.files.create(file=file_buffer, purpose="fine-tune")
+
+    file_id = response.id
+
+    validation_file_id = None
+    if validation_file:
+        with open(validation_file, "rb") as val_file:
+            val_response = client.files.create(file=val_file, purpose="fine-tune")
+        validation_file_id = val_response.id
+
+    with console.status(f"Monitoring upload: {file_id} before finetuning...") as status:
+        status.spinner_style = "dots"
+        while True:
+            file_status = get_file_status(file_id)
+            validation_file_status = (
+                get_file_status(validation_file_id) if validation_file_id else ""
+            )
+
+            if file_status == "processed" and (
+                not validation_file_id or validation_file_status == "processed"
+            ):
+                console.log(f"[bold green]File {file_id} uploaded successfully!")
+                if validation_file_id:
+                    console.log(
+                        f"[bold green]Validation file {validation_file_id} uploaded successfully!"
+                    )
+                break
+
+            time.sleep(poll)
+
+    additional_params: FuneTuningParams = {}
+    if hyperparameters_dict:
+        additional_params["hyperparameters"] = hyperparameters_dict
+    if validation_file:
+        additional_params["validation_file"] = validation_file
+    if model_suffix:
+        additional_params["suffix"] = model_suffix
+
+    job = client.fine_tuning.jobs.create(
+        training_file=file_id,
+        model=model,
+        **additional_params,
+    )
+    if validation_file_id:
+        console.log(
+            f"[bold green]Fine-tuning job created with ID: {job.id} from file ID: {file_id} and validation_file ID: {validation_file_id}"
+        )
+    else:
+        console.log(
+            f"[bold green]Fine-tuning job created with ID: {job.id} from file ID: {file_id}"
+        )
+    watch(limit=5, poll=poll, screen=False)
+
+
+@app.command(
+    help="Cancel a fine-tuning job.",
+)
+def cancel(
+    id: str = typer.Argument(help="ID of the fine-tuning job to cancel"),
+) -> None:
+    with console.status(f"[bold red]Cancelling job {id}...", spinner="dots"):
+        try:
+            client.fine_tuning.jobs.cancel(id)
+            console.log(f"[bold red]Job {id} cancelled successfully!")
+        except Exception as e:
+            console.log(f"[bold red]Error cancelling job {id}: {e}")
+
+
+if __name__ == "__main__":
+    app()
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/cli/cli.py
+=======
+import typer
+import instructor.cli.jobs as jobs
+import instructor.cli.files as files
+import instructor.cli.usage as usage
+import instructor.cli.hub as hub
+
+app = typer.Typer()
+
+app.add_typer(jobs.app, name="jobs", help="Monitor and create fine tuning jobs")
+app.add_typer(files.app, name="files", help="Manage files on OpenAI's servers")
+app.add_typer(usage.app, name="usage", help="Check OpenAI API usage data")
+app.add_typer(hub.app, name="hub", help="Interact with the instructor hub")
+
+
+@app.command()
+def docs(query: str = typer.Argument(None, help="Search the documentation")) -> None:
+    """
+    Open the instructor documentation website.
+    """
+    if query:
+        typer.launch(f"https://jxnl.github.io/instructor/?q={query}")
+    else:
+        typer.launch("https://jxnl.github.io/instructor")
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/cli/hub.py
+=======
+from typing import Optional
+
+import typer
+import httpx
+
+from pydantic import BaseModel
+from rich.console import Console
+from rich.table import Table
+from rich.markdown import Markdown
+
+app = typer.Typer(
+    name="hub",
+    help="Interact with the instructor hub, a collection of examples and cookbooks for the instructor library.",
+    short_help="Interact with the instructor hub",
+)
+console = Console()
+
+
+class HubPage(BaseModel):
+    id: int
+    name: str
+    slug: str
+    branch: str = "main"
+    count: int = 0
+
+    def get_doc_url(self) -> str:
+        return f"https://jxnl.github.io/instructor/hub/{self.slug}/"
+
+    def get_md_url(self) -> str:
+        return f"https://raw.githubusercontent.com/jxnl/instructor/{self.branch}/docs/hub/{self.slug}.md?raw=true"
+
+    def render_doc_link(self) -> str:
+        return f"[link={self.get_doc_url()}](doc)[/link]"
+
+    def render_slug(self) -> str:
+        return f"{self.slug} {self.render_doc_link()}"
+
+
+class HubClient:
+    def __init__(
+        self, base_url: str = "https://instructor-hub-proxy.jason-a3f.workers.dev"
+    ):
+        self.base_url = base_url
+
+    def get_cookbooks(self, branch: str, q: Optional[str] = None, sort: bool = False):
+        """Get collection index of cookbooks."""
+        url = f"{self.base_url}/api/{branch}/items/"
+
+        if q:
+            url += f"?q={q}"
+
+        response = httpx.get(url)
+        if response.status_code == 200:
+            pages = [HubPage(**page) for page in response.json()]
+            if sort:
+                return sorted(pages, key=lambda x: x.count, reverse=True)
+            return pages
+        else:
+            raise Exception(f"Failed to fetch cookbooks: {response.status_code}")
+
+    def get_content_markdown(self, branch: str, slug: str) -> str:
+        """Get markdown content."""
+        url = f"{self.base_url}/api/{branch}/items/{slug}/md/"
+        response = httpx.get(url)
+        if response.status_code == 200:
+            return response.text
+        else:
+            raise Exception(f"Failed to fetch markdown content: {response.status_code}")
+
+    def get_content_python(self, branch: str, slug: str) -> str:
+        """Get Python code blocks from content."""
+        url = f"{self.base_url}/api/{branch}/items/{slug}/py/"
+        response = httpx.get(url)
+        if response.status_code == 200:
+            return response.text
+        else:
+            raise Exception(f"Failed to fetch Python content: {response.status_code}")
+
+    def get_cookbook_id(self, id: int, branch: str = "main") -> Optional[HubPage]:
+        for cookbook in self.get_cookbooks(branch):
+            if cookbook.id == id:
+                return cookbook
+
+    def get_cookbook_slug(self, slug: str, branch: str = "main") -> Optional[HubPage]:
+        for cookbook in self.get_cookbooks(branch):
+            if cookbook.slug == slug:
+                return cookbook
+
+
+@app.command(
+    "list",
+    help="List all available cookbooks",
+    short_help="List all available cookbooks",
+)
+def list_cookbooks(
+    q: Optional[str] = typer.Option(None, "-q", help="Search for cookbooks by name"),
+    sort: bool = typer.Option(False, "--sort", help="Sort the cookbooks by popularity"),
+    branch: str = typer.Option(
+        "main",
+        "--branch",
+        "-b",
+        help="Specific branch to fetch the cookbooks from. Defaults to 'main'.",
+    ),
+):
+    table = Table(title="Available Cookbooks")
+    table.add_column("hub_id", justify="right", style="cyan", no_wrap=True)
+    table.add_column("slug", style="green")
+    table.add_column("title", style="white")
+    table.add_column("n_downloads", justify="right")
+
+    client = HubClient()
+    for cookbook in client.get_cookbooks(branch, q=q, sort=sort):
+        ii = cookbook.id
+        slug = cookbook.render_slug()
+        title = cookbook.name
+        table.add_row(str(ii), slug, title, str(cookbook.count))
+
+    console.print(table)
+
+
+@app.command(
+    "pull",
+    help="Pull the latest cookbooks from the instructor hub, optionally outputting to a file",
+    short_help="Pull the latest cookbooks",
+)
+def pull(
+    id: Optional[int] = typer.Option(None, "--id", "-i", help="The cookbook id"),
+    slug: Optional[str] = typer.Option(None, "--slug", "-s", help="The cookbook slug"),
+    py: bool = typer.Option(False, "--py", help="Output to a Python file"),
+    file: Optional[str] = typer.Option(None, "--output", help="Output to a file"),
+    branch: str = typer.Option(
+        "main", help="Specific branch to fetch the cookbooks from."
+    ),
+    page: bool = typer.Option(
+        False, "--page", "-p", help="Paginate the output with a less-like pager"
+    ),
+):
+    client = HubClient()
+    cookbook = (
+        client.get_cookbook_id(id, branch=branch)
+        if id
+        else client.get_cookbook_slug(slug, branch=branch)
+        if slug
+        else None
+    )
+    if not cookbook:
+        typer.echo("Please provide a valid cookbook id or slug.")
+        raise typer.Exit(code=1)
+
+    output = (
+        client.get_content_python(branch, cookbook.slug)
+        if py
+        else Markdown(client.get_content_markdown(branch, cookbook.slug))
+    )
+
+    if file:
+        with open(file, "w") as f:
+            f.write(output)  # type: ignore - markdown is writable
+            return
+
+    if page:
+        with console.pager(styles=True):
+            console.print(output)
+    elif py:
+        print(output)
+    else:
+        console.print(output)
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/cli/__init__.py
+=======
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/cli/files.py
+=======
+# type: ignore - stub mismatched
+
+import time
+from datetime import datetime
+from typing import Literal, cast
+
+import openai
+import typer
+from openai import OpenAI
+from rich.console import Console
+from rich.table import Table
+
+client = OpenAI()
+app = typer.Typer()
+console = Console()
+
+
+# Sample response data
+def generate_file_table(files: list[openai.types.FileObject]) -> Table:
+    table = Table(
+        title="OpenAI Files",
+    )
+    table.add_column("File ID", style="dim")
+    table.add_column("Size (bytes)", justify="right")
+    table.add_column("Creation Time")
+    table.add_column("Filename")
+    table.add_column("Purpose")
+
+    for file in files:
+        table.add_row(
+            file["id"],
+            str(file["bytes"]),
+            str(datetime.fromtimestamp(file["created_at"])),
+            file["filename"],
+            file["purpose"],
+        )
+
+    return table
+
+
+def get_files() -> list[openai.types.FileObject]:
+    files = client.files.list()
+    files = files.data
+    files = sorted(files, key=lambda x: x.created_at, reverse=True)
+    return files
+
+
+def get_file_status(file_id: str) -> str:
+    response = client.files.retrieve(file_id)
+    return response.status
+
+
+@app.command(
+    help="Upload a file to OpenAI's servers, will monitor the upload status until it is processed",
+)
+def upload(
+    filepath: str = typer.Argument(help="Path to the file to upload"),
+    purpose: str = typer.Option("fine-tune", help="Purpose of the file"),
+    poll: int = typer.Option(5, help="Polling interval in seconds"),
+) -> None:
+    # Literals aren't supported by Typer yet.
+    file_purpose = cast(Literal["fine-tune", "assistants"], purpose)
+    with open(filepath, "rb") as file:
+        response = client.files.create(file=file, purpose=file_purpose)
+    file_id = response["id"]  # type: ignore - types might be out of date
+    with console.status(f"Monitoring upload: {file_id}...") as status:
+        status.spinner_style = "dots"
+        while True:
+            file_status = get_file_status(file_id)
+            if file_status == "processed":
+                console.log(f"[bold green]File {file_id} uploaded successfully!")
+                break
+            time.sleep(poll)
+
+
+@app.command(
+    help="Download a file from OpenAI's servers",
+)
+def download(
+    file_id: str = typer.Argument(help="ID of the file to download"),
+    output: str = typer.Argument(help="Output path for the downloaded file"),
+) -> None:
+    with console.status(f"[bold green]Downloading file {file_id}...", spinner="dots"):
+        content = client.files.download(file_id)
+        with open(output, "wb") as file:
+            file.write(content)
+        console.log(f"[bold green]File {file_id} downloaded successfully!")
+
+
+@app.command(
+    help="Delete a file from OpenAI's servers",
+)
+def delete(file_id: str = typer.Argument(help="ID of the file to delete")) -> None:
+    with console.status(f"[bold red]Deleting file {file_id}...", spinner="dots"):
+        try:
+            client.files.delete(file_id)
+            console.log(f"[bold red]File {file_id} deleted successfully!")
+        except Exception as e:
+            console.log(f"[bold red]Error deleting file {file_id}: {e}")
+            return
+
+
+@app.command(
+    help="Monitor the status of a file on OpenAI's servers",
+)
+def status(
+    file_id: str = typer.Argument(help="ID of the file to check the status of"),
+) -> None:
+    with console.status(f"Monitoring status of file {file_id}...") as status:
+        while True:
+            file_status = get_file_status(file_id)
+            status.update(f"File status: {file_status}")
+            if file_status in ["pending", "processed"]:
+                break
+            time.sleep(5)
+
+
+@app.command(
+    help="List the files on OpenAI's servers",
+)
+def list() -> None:
+    files = get_files()
+    console.log(generate_file_table(files))
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/cli/usage.py
+=======
+from typing import Any, Union
+from collections.abc import Awaitable
+from datetime import datetime, timedelta
+import typer
+import os
+import aiohttp
+import asyncio
+from builtins import list as List
+from collections import defaultdict
+from rich.console import Console
+from rich.table import Table
+from rich.progress import Progress
+
+from instructor._types._alias import ModelNames
+
+
+app = typer.Typer()
+console = Console()
+
+api_key = os.environ.get("OPENAI_API_KEY")
+
+
+async def fetch_usage(date: str) -> dict[str, Any]:
+    headers = {"Authorization": f"Bearer {api_key}"}
+    url = f"https://api.openai.com/v1/usage?date={date}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as resp:
+            return await resp.json()
+
+
+async def get_usage_for_past_n_days(n_days: int) -> list[dict[str, Any]]:
+    tasks: List[Awaitable[dict[str, Any]]] = []  # noqa: UP006 - conflicting with the fn name
+    all_data: List[dict[str, Any]] = []  # noqa: UP006 - conflicting with the fn name
+    with Progress() as progress:
+        if n_days > 1:
+            task = progress.add_task("[green]Fetching usage data...", total=n_days)
+            for i in range(n_days):
+                date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+                tasks.append(fetch_usage(date))
+                progress.update(task, advance=1)
+        else:
+            tasks.append(fetch_usage(datetime.now().strftime("%Y-%m-%d")))
+
+        fetched_data = await asyncio.gather(*tasks)
+        for data in fetched_data:
+            all_data.extend(data.get("data", []))
+    return all_data
+
+
+# Define the cost per unit for each model
+MODEL_COSTS = {
+    "gpt-4o": {"prompt": 0.005 / 1000, "completion": 0.015 / 1000},
+    "gpt-4o-2024-05-13": {"prompt": 0.005 / 1000, "completion": 0.015 / 1000},
+    "gpt-4-turbo": {"prompt": 0.01 / 1000, "completion": 0.03 / 1000},
+    "gpt-4-turbo-2024-04-09": {"prompt": 0.01 / 1000, "completion": 0.03 / 1000},
+    "gpt-4-0125-preview": {"prompt": 0.01 / 1000, "completion": 0.03 / 1000},
+    "gpt-4-turbo-preview": {"prompt": 0.01 / 1000, "completion": 0.03 / 1000},
+    "gpt-4-1106-preview": {"prompt": 0.01 / 1000, "completion": 0.03 / 1000},
+    "gpt-4-vision-preview": {"prompt": 0.01 / 1000, "completion": 0.03 / 1000},
+    "gpt-4": {"prompt": 0.03 / 1000, "completion": 0.06 / 1000},
+    "gpt-4-0314": {"prompt": 0.03 / 1000, "completion": 0.06 / 1000},
+    "gpt-4-0613": {"prompt": 0.03 / 1000, "completion": 0.06 / 1000},
+    "gpt-4-32k": {"prompt": 0.06 / 1000, "completion": 0.12 / 1000},
+    "gpt-4-32k-0314": {"prompt": 0.06 / 1000, "completion": 0.12 / 1000},
+    "gpt-4-32k-0613": {"prompt": 0.06 / 1000, "completion": 0.12 / 1000},
+    "gpt-3.5-turbo": {"prompt": 0.0005 / 1000, "completion": 0.0015 / 1000},
+    "gpt-3.5-turbo-16k": {"prompt": 0.0030 / 1000, "completion": 0.0040 / 1000},
+    "gpt-3.5-turbo-0301": {"prompt": 0.0015 / 1000, "completion": 0.0020 / 1000},
+    "gpt-3.5-turbo-0613": {"prompt": 0.0015 / 1000, "completion": 0.0020 / 1000},
+    "gpt-3.5-turbo-1106": {"prompt": 0.0010 / 1000, "completion": 0.0020 / 1000},
+    "gpt-3.5-turbo-0125": {"prompt": 0.0005 / 1000, "completion": 0.0015 / 1000},
+    "gpt-3.5-turbo-16k-0613": {"prompt": 0.0030 / 1000, "completion": 0.0040 / 1000},
+    "gpt-3.5-turbo-instruct": {"prompt": 0.0015 / 1000, "completion": 0.0020 / 1000},
+    "text-embedding-3-small": 0.00002 / 1000,
+    "text-embedding-3-large": 0.00013 / 1000,
+    "text-embedding-ada-002": 0.00010 / 1000,
+}
+
+
+def get_model_cost(
+    model: ModelNames,
+) -> Union[dict[str, float], float]:
+    """Get the cost details for a given model."""
+    if model in MODEL_COSTS:
+        return MODEL_COSTS[model]
+
+    if model.startswith("gpt-3.5-turbo-16k"):
+        return MODEL_COSTS["gpt-3.5-turbo-16k"]
+    elif model.startswith("gpt-3.5-turbo"):
+        return MODEL_COSTS["gpt-3.5-turbo"]
+    elif model.startswith("gpt-4-turbo"):
+        return MODEL_COSTS["gpt-4-turbo-preview"]
+    elif model.startswith("gpt-4-32k"):
+        return MODEL_COSTS["gpt-4-32k"]
+    elif model.startswith("gpt-4o"):
+        return MODEL_COSTS["gpt-4o"]
+    elif model.startswith("gpt-4"):
+        return MODEL_COSTS["gpt-4"]
+    else:
+        raise ValueError(f"Cost for model {model} not found")
+
+
+def calculate_cost(
+    snapshot_id: ModelNames,
+    n_context_tokens: int,
+    n_generated_tokens: int,
+) -> float:
+    """Calculate the cost based on the snapshot ID and number of tokens."""
+    cost = get_model_cost(snapshot_id)
+
+    if isinstance(cost, (float, int)):
+        return cost * (n_context_tokens + n_generated_tokens)
+
+    prompt_cost = cost["prompt"] * n_context_tokens
+    completion_cost = cost["completion"] * n_generated_tokens
+    return prompt_cost + completion_cost
+
+
+def group_and_sum_by_date_and_snapshot(usage_data: list[dict[str, Any]]) -> Table:
+    """Group and sum the usage data by date and snapshot, including costs."""
+    summary: defaultdict[str, defaultdict[str, dict[str, Union[int, float]]]] = (
+        defaultdict(
+            lambda: defaultdict(
+                lambda: {"total_requests": 0, "total_tokens": 0, "total_cost": 0.0}
+            )
+        )
+    )
+
+    for usage in usage_data:
+        snapshot_id = usage["snapshot_id"]
+        date = datetime.fromtimestamp(usage["aggregation_timestamp"]).strftime(
+            "%Y-%m-%d"
+        )
+        summary[date][snapshot_id]["total_requests"] += usage["n_requests"]
+        summary[date][snapshot_id]["total_tokens"] += usage["n_generated_tokens_total"]
+
+        # Calculate and add the cost
+        cost = calculate_cost(
+            snapshot_id,
+            usage["n_context_tokens_total"],
+            usage["n_generated_tokens_total"],
+        )
+        summary[date][snapshot_id]["total_cost"] += cost
+
+    table = Table(title="Usage Summary by Date, Snapshot, and Cost")
+    table.add_column("Date", style="dim")
+    table.add_column("Model", style="dim")
+    table.add_column("Total Requests", justify="right")
+    table.add_column("Total Cost ($)", justify="right")
+
+    # Sort dates and snapshots in descending order
+    sorted_dates = sorted(summary.keys(), reverse=True)
+    for date in sorted_dates:
+        sorted_snapshots = sorted(summary[date].keys(), reverse=True)
+        for snapshot_id in sorted_snapshots:
+            data = summary[date][snapshot_id]
+            table.add_row(
+                date,
+                snapshot_id,
+                str(data["total_requests"]),
+                "{:.2f}".format(data["total_cost"]),
+            )
+
+    return table
+
+
+@app.command(help="Displays OpenAI API usage data for the past N days.")
+def list(
+    n: int = typer.Option(0, help="Number of days."),
+) -> None:
+    all_data = asyncio.run(get_usage_for_past_n_days(n))
+    table = group_and_sum_by_date_and_snapshot(all_data)
+    console.print(table)
+
+
+if __name__ == "__main__":
+    app()
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/dsl/iterable.py
+=======
+from typing import Any, Optional, cast, ClassVar
+from collections.abc import AsyncGenerator, Generator, Iterable
+
+from pydantic import BaseModel, Field, create_model  # type: ignore - remove once Pydantic is updated
+
+from instructor.function_calls import OpenAISchema
+from instructor.mode import Mode
+from instructor.utils import extract_json_from_stream, extract_json_from_stream_async
+
+
+class IterableBase:
+    task_type: ClassVar[Optional[type[BaseModel]]] = None
+
+    @classmethod
+    def from_streaming_response(
+        cls, completion: Iterable[Any], mode: Mode, **kwargs: Any
+    ) -> Generator[BaseModel, None, None]:  # noqa: ARG003
+        json_chunks = cls.extract_json(completion, mode)
+
+        if mode == Mode.MD_JSON:
+            json_chunks = extract_json_from_stream(json_chunks)
+
+        yield from cls.tasks_from_chunks(json_chunks, **kwargs)
+
+    @classmethod
+    async def from_streaming_response_async(
+        cls, completion: AsyncGenerator[Any, None], mode: Mode, **kwargs: Any
+    ) -> AsyncGenerator[BaseModel, None]:
+        json_chunks = cls.extract_json_async(completion, mode)
+
+        if mode == Mode.MD_JSON:
+            json_chunks = extract_json_from_stream_async(json_chunks)
+
+        return cls.tasks_from_chunks_async(json_chunks, **kwargs)
+
+    @classmethod
+    def tasks_from_chunks(
+        cls, json_chunks: Iterable[str], **kwargs: Any
+    ) -> Generator[BaseModel, None, None]:
+        started = False
+        potential_object = ""
+        for chunk in json_chunks:
+            potential_object += chunk
+            if not started:
+                if "[" in chunk:
+                    started = True
+                    potential_object = chunk[chunk.find("[") + 1 :]
+                continue
+
+            task_json, potential_object = cls.get_object(potential_object, 0)
+            if task_json:
+                assert cls.task_type is not None
+                obj = cls.task_type.model_validate_json(task_json, **kwargs)
+                yield obj
+
+    @classmethod
+    async def tasks_from_chunks_async(
+        cls, json_chunks: AsyncGenerator[str, None], **kwargs: Any
+    ) -> AsyncGenerator[BaseModel, None]:
+        started = False
+        potential_object = ""
+        async for chunk in json_chunks:
+            potential_object += chunk
+            if not started:
+                if "[" in chunk:
+                    started = True
+                    potential_object = chunk[chunk.find("[") + 1 :]
+                continue
+
+            task_json, potential_object = cls.get_object(potential_object, 0)
+            if task_json:
+                assert cls.task_type is not None
+                obj = cls.task_type.model_validate_json(task_json, **kwargs)
+                yield obj
+
+    @staticmethod
+    def extract_json(
+        completion: Iterable[Any], mode: Mode
+    ) -> Generator[str, None, None]:
+        for chunk in completion:
+            try:
+                if mode == Mode.ANTHROPIC_JSON:
+                    if json_chunk := chunk.delta.text:
+                        yield json_chunk
+                if mode == Mode.ANTHROPIC_TOOLS:
+                    yield chunk.model_extra.get("delta", "").get("partial_json", "")
+                if mode == Mode.GEMINI_JSON:
+                    yield chunk.text
+                elif chunk.choices:
+                    if mode == Mode.FUNCTIONS:
+                        if json_chunk := chunk.choices[0].delta.function_call.arguments:
+                            yield json_chunk
+                    elif mode in {Mode.JSON, Mode.MD_JSON, Mode.JSON_SCHEMA}:
+                        if json_chunk := chunk.choices[0].delta.content:
+                            yield json_chunk
+                    elif mode == Mode.TOOLS:
+                        if json_chunk := chunk.choices[0].delta.tool_calls:
+                            yield json_chunk[0].function.arguments
+                    else:
+                        raise NotImplementedError(
+                            f"Mode {mode} is not supported for MultiTask streaming"
+                        )
+            except AttributeError:
+                pass
+
+    @staticmethod
+    async def extract_json_async(
+        completion: AsyncGenerator[Any, None], mode: Mode
+    ) -> AsyncGenerator[str, None]:
+        async for chunk in completion:
+            try:
+                if mode == Mode.ANTHROPIC_JSON:
+                    if json_chunk := chunk.delta.text:
+                        yield json_chunk
+                if mode == Mode.ANTHROPIC_TOOLS:
+                    yield chunk.model_extra.get("delta", "").get("partial_json", "")
+                elif chunk.choices:
+                    if mode == Mode.FUNCTIONS:
+                        if json_chunk := chunk.choices[0].delta.function_call.arguments:
+                            yield json_chunk
+                    elif mode in {Mode.JSON, Mode.MD_JSON, Mode.JSON_SCHEMA}:
+                        if json_chunk := chunk.choices[0].delta.content:
+                            yield json_chunk
+                    elif mode == Mode.TOOLS:
+                        if json_chunk := chunk.choices[0].delta.tool_calls:
+                            yield json_chunk[0].function.arguments
+                    else:
+                        raise NotImplementedError(
+                            f"Mode {mode} is not supported for MultiTask streaming"
+                        )
+            except AttributeError:
+                pass
+
+    @staticmethod
+    def get_object(s: str, stack: int) -> tuple[Optional[str], str]:
+        start_index = s.find("{")
+        for i, c in enumerate(s):
+            if c == "{":
+                stack += 1
+            if c == "}":
+                stack -= 1
+                if stack == 0:
+                    return s[start_index : i + 1], s[i + 2 :]
+        return None, s
+
+
+def IterableModel(
+    subtask_class: type[BaseModel],
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+) -> type[BaseModel]:
+    """
+    Dynamically create a IterableModel OpenAISchema that can be used to segment multiple
+    tasks given a base class. This creates class that can be used to create a toolkit
+    for a specific task, names and descriptions are automatically generated. However
+    they can be overridden.
+
+    ## Usage
+
+    ```python
+    from pydantic import BaseModel, Field
+    from instructor import IterableModel
+
+    class User(BaseModel):
+        name: str = Field(description="The name of the person")
+        age: int = Field(description="The age of the person")
+        role: str = Field(description="The role of the person")
+
+    MultiUser = IterableModel(User)
+    ```
+
+    ## Result
+
+    ```python
+    class MultiUser(OpenAISchema, MultiTaskBase):
+        tasks: List[User] = Field(
+            default_factory=list,
+            repr=False,
+            description="Correctly segmented list of `User` tasks",
+        )
+
+        @classmethod
+        def from_streaming_response(cls, completion) -> Generator[User]:
+            '''
+            Parse the streaming response from OpenAI and yield a `User` object
+            for each task in the response
+            '''
+            json_chunks = cls.extract_json(completion)
+            yield from cls.tasks_from_chunks(json_chunks)
+    ```
+
+    Parameters:
+        subtask_class (Type[OpenAISchema]): The base class to use for the MultiTask
+        name (Optional[str]): The name of the MultiTask class, if None then the name
+            of the subtask class is used as `Multi{subtask_class.__name__}`
+        description (Optional[str]): The description of the MultiTask class, if None
+            then the description is set to `Correct segmentation of `{subtask_class.__name__}` tasks`
+
+    Returns:
+        schema (OpenAISchema): A new class that can be used to segment multiple tasks
+    """
+    task_name = subtask_class.__name__ if name is None else name
+
+    name = f"Iterable{task_name}"
+
+    list_tasks = (
+        list[subtask_class],
+        Field(
+            default_factory=list,
+            repr=False,
+            description=f"Correctly segmented list of `{task_name}` tasks",
+        ),
+    )
+
+    base_models = cast(tuple[type[BaseModel], ...], (OpenAISchema, IterableBase))
+    new_cls = create_model(
+        name,
+        tasks=list_tasks,
+        __base__=base_models,
+    )
+    new_cls = cast(type[IterableBase], new_cls)
+
+    # set the class constructor BaseModel
+    new_cls.task_type = subtask_class
+
+    new_cls.__doc__ = (
+        f"Correct segmentation of `{task_name}` tasks"
+        if description is None
+        else description
+    )
+    assert issubclass(
+        new_cls, OpenAISchema
+    ), "The new class should be a subclass of OpenAISchema"
+    return new_cls
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/dsl/maybe.py
+=======
+from pydantic import BaseModel, Field, create_model  # type: ignore - remove once Pydantic is updated
+from typing import Generic, Optional, TypeVar
+
+T = TypeVar("T", bound=BaseModel)
+
+
+class MaybeBase(BaseModel, Generic[T]):
+    """
+    Extract a result from a model, if any, otherwise set the error and message fields.
+    """
+
+    result: Optional[T]
+    error: bool = Field(default=False)
+    message: Optional[str]
+
+    def __bool__(self) -> bool:
+        return self.result is not None
+
+
+def Maybe(model: type[T]) -> type[MaybeBase[T]]:
+    """
+    Create a Maybe model for a given Pydantic model. This allows you to return a model that includes fields for `result`, `error`, and `message` for sitatations where the data may not be present in the context.
+
+    ## Usage
+
+    ```python
+    from pydantic import BaseModel, Field
+    from instructor import Maybe
+
+    class User(BaseModel):
+        name: str = Field(description="The name of the person")
+        age: int = Field(description="The age of the person")
+        role: str = Field(description="The role of the person")
+
+    MaybeUser = Maybe(User)
+    ```
+
+    ## Result
+
+    ```python
+    class MaybeUser(BaseModel):
+        result: Optional[User]
+        error: bool = Field(default=False)
+        message: Optional[str]
+
+        def __bool__(self):
+            return self.result is not None
+    ```
+
+    Parameters:
+        model (Type[BaseModel]): The Pydantic model to wrap with Maybe.
+
+    Returns:
+        MaybeModel (Type[BaseModel]): A new Pydantic model that includes fields for `result`, `error`, and `message`.
+    """
+    return create_model(
+        f"Maybe{model.__name__}",
+        __base__=MaybeBase,
+        result=(
+            Optional[model],
+            Field(
+                default=None,
+                description="Correctly extracted result from the model, if any, otherwise None",
+            ),
+        ),
+        error=(bool, Field(default=False)),
+        message=(
+            Optional[str],
+            Field(
+                default=None,
+                description="Error message if no result was found, should be short and concise",
+            ),
+        ),
+    )
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/dsl/partial.py
+=======
+# --------------------------------------------------------------------------------
+# The following code is adapted from a comment on GitHub in the pydantic/pydantic repository by silviumarcu.
+# Source: https://github.com/pydantic/pydantic/issues/6381#issuecomment-1831607091
+#
+# This code is used in accordance with the repository's license, and this reference
+# serves as an acknowledgment of the original author's contribution to this project.
+# --------------------------------------------------------------------------------
+
+from __future__ import annotations
+
+from jiter import from_json
+from pydantic import BaseModel, create_model  # type: ignore - remove once Pydantic is updated
+from pydantic.fields import FieldInfo
+from typing import (
+    Any,
+    Generic,
+    get_args,
+    get_origin,
+    NoReturn,
+    Optional,
+    TypeVar,
+)
+from collections.abc import AsyncGenerator, Generator, Iterable
+from copy import deepcopy
+from functools import cache
+
+from instructor.mode import Mode
+from instructor.utils import extract_json_from_stream, extract_json_from_stream_async
+
+T_Model = TypeVar("T_Model", bound=BaseModel)
+
+
+class MakeFieldsOptional:
+    pass
+
+
+def _make_field_optional(
+    field: FieldInfo,
+) -> tuple[Any, FieldInfo]:
+    tmp_field = deepcopy(field)
+
+    annotation = field.annotation
+
+    # Handle generics (like List, Dict, etc.)
+    if get_origin(annotation) is not None:
+        # Get the generic base (like List, Dict) and its arguments (like User in List[User])
+        generic_base = get_origin(annotation)
+        generic_args = get_args(annotation)
+
+        # Recursively apply Partial to each of the generic arguments
+        modified_args = tuple(
+            (
+                Partial[arg, MakeFieldsOptional]  # type: ignore[valid-type]
+                if isinstance(arg, type) and issubclass(arg, BaseModel)
+                else arg
+            )
+            for arg in generic_args
+        )
+
+        # Reconstruct the generic type with modified arguments
+        tmp_field.annotation = (
+            Optional[generic_base[modified_args]] if generic_base else None
+        )
+        tmp_field.default = None
+    # If the field is a BaseModel, then recursively convert it's
+    # attributes to optionals.
+    elif isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        tmp_field.annotation = Optional[Partial[annotation, MakeFieldsOptional]]  # type: ignore[assignment, valid-type]
+        tmp_field.default = {}
+    else:
+        tmp_field.annotation = Optional[field.annotation]  # type: ignore[assignment]
+        tmp_field.default = None
+
+    return tmp_field.annotation, tmp_field  # type: ignore
+
+
+class PartialBase(Generic[T_Model]):
+    @classmethod
+    @cache
+    def get_partial_model(cls) -> type[T_Model]:
+        """Return a partial model we can use to validate partial results."""
+        assert issubclass(
+            cls, BaseModel
+        ), f"{cls.__name__} must be a subclass of BaseModel"
+
+        return create_model(
+            __model_name=(
+                cls.__name__
+                if cls.__name__.startswith("Partial")
+                else f"Partial{cls.__name__}"
+            ),
+            __base__=cls,
+            __module__=cls.__module__,
+            **{
+                field_name: _make_field_optional(field_info)
+                for field_name, field_info in cls.model_fields.items()
+            },
+        )  # type: ignore[all]
+
+    @classmethod
+    def from_streaming_response(
+        cls, completion: Iterable[Any], mode: Mode, **kwargs: Any
+    ) -> Generator[T_Model, None, None]:
+        json_chunks = cls.extract_json(completion, mode)
+
+        if mode == Mode.MD_JSON:
+            json_chunks = extract_json_from_stream(json_chunks)
+
+        yield from cls.model_from_chunks(json_chunks, **kwargs)
+
+    @classmethod
+    async def from_streaming_response_async(
+        cls, completion: AsyncGenerator[Any, None], mode: Mode, **kwargs: Any
+    ) -> AsyncGenerator[T_Model, None]:
+        json_chunks = cls.extract_json_async(completion, mode)
+
+        if mode == Mode.MD_JSON:
+            json_chunks = extract_json_from_stream_async(json_chunks)
+
+        return cls.model_from_chunks_async(json_chunks, **kwargs)
+
+    @classmethod
+    def model_from_chunks(
+        cls, json_chunks: Iterable[Any], **kwargs: Any
+    ) -> Generator[T_Model, None, None]:
+        potential_object = ""
+        partial_model = cls.get_partial_model()
+        for chunk in json_chunks:
+            potential_object += chunk
+            obj = from_json(
+                (potential_object or "{}").encode(), partial_mode="trailing-strings"
+            )
+            obj = partial_model.model_validate(obj, strict=None, **kwargs)
+            yield obj
+
+    @classmethod
+    async def model_from_chunks_async(
+        cls, json_chunks: AsyncGenerator[str, None], **kwargs: Any
+    ) -> AsyncGenerator[T_Model, None]:
+        potential_object = ""
+        partial_model = cls.get_partial_model()
+        async for chunk in json_chunks:
+            potential_object += chunk
+            obj = from_json(
+                (potential_object or "{}").encode(), partial_mode="trailing-strings"
+            )
+            obj = partial_model.model_validate(obj, strict=None, **kwargs)
+            yield obj
+
+    @staticmethod
+    def extract_json(
+        completion: Iterable[Any], mode: Mode
+    ) -> Generator[str, None, None]:
+        for chunk in completion:
+            try:
+                if mode == Mode.ANTHROPIC_JSON:
+                    if json_chunk := chunk.delta.text:
+                        yield json_chunk
+                if mode == Mode.ANTHROPIC_TOOLS:
+                    yield chunk.model_extra.get("delta", "").get("partial_json", "")
+                if mode == Mode.GEMINI_JSON:
+                    yield chunk.text
+                elif chunk.choices:
+                    if mode == Mode.FUNCTIONS:
+                        if json_chunk := chunk.choices[0].delta.function_call.arguments:
+                            yield json_chunk
+                    elif mode in {Mode.JSON, Mode.MD_JSON, Mode.JSON_SCHEMA}:
+                        if json_chunk := chunk.choices[0].delta.content:
+                            yield json_chunk
+                    elif mode == Mode.TOOLS:
+                        if json_chunk := chunk.choices[0].delta.tool_calls:
+                            yield json_chunk[0].function.arguments
+                    else:
+                        raise NotImplementedError(
+                            f"Mode {mode} is not supported for MultiTask streaming"
+                        )
+            except AttributeError:
+                pass
+
+    @staticmethod
+    async def extract_json_async(
+        completion: AsyncGenerator[Any, None], mode: Mode
+    ) -> AsyncGenerator[str, None]:
+        async for chunk in completion:
+            try:
+                if mode == Mode.ANTHROPIC_JSON:
+                    if json_chunk := chunk.delta.text:
+                        yield json_chunk
+                if mode == Mode.ANTHROPIC_TOOLS:
+                    yield chunk.model_extra.get("delta", "").get("partial_json", "")
+                elif chunk.choices:
+                    if mode == Mode.FUNCTIONS:
+                        if json_chunk := chunk.choices[0].delta.function_call.arguments:
+                            yield json_chunk
+                    elif mode in {Mode.JSON, Mode.MD_JSON, Mode.JSON_SCHEMA}:
+                        if json_chunk := chunk.choices[0].delta.content:
+                            yield json_chunk
+                    elif mode == Mode.TOOLS:
+                        if json_chunk := chunk.choices[0].delta.tool_calls:
+                            yield json_chunk[0].function.arguments
+                    else:
+                        raise NotImplementedError(
+                            f"Mode {mode} is not supported for MultiTask streaming"
+                        )
+            except AttributeError:
+                pass
+
+
+class Partial(Generic[T_Model]):
+    """Generate a new class which has PartialBase as a base class.
+
+    Notes:
+        This will enable partial validation of the model while streaming.
+
+    Example:
+        Partial[SomeModel]
+    """
+
+    def __new__(
+        cls,
+        *args: object,  # noqa :ARG003
+        **kwargs: object,  # noqa :ARG003
+    ) -> Partial[T_Model]:
+        """Cannot instantiate.
+
+        Raises:
+            TypeError: Direct instantiation not allowed.
+        """
+        raise TypeError("Cannot instantiate abstract Partial class.")
+
+    def __init_subclass__(
+        cls,
+        *args: object,
+        **kwargs: object,
+    ) -> NoReturn:
+        """Cannot subclass.
+
+        Raises:
+           TypeError: Subclassing not allowed.
+        """
+        raise TypeError(f"Cannot subclass {cls.__module__}.Partial")
+
+    def __class_getitem__(
+        cls,
+        wrapped_class: type[T_Model] | tuple[type[T_Model], type[MakeFieldsOptional]],
+    ) -> type[T_Model]:
+        """Convert model to one that inherits from PartialBase.
+
+        We don't make the fields optional at this point, we just wrap them with `Partial` so the names of the nested models will be
+        `Partial{ModelName}`. We want the output of `model_json_schema()` to
+        reflect the name change, but everything else should be the same as the
+        original model. During validation, we'll generate a true partial model
+        to support partially defined fields.
+
+        """
+
+        make_fields_optional = None
+        if isinstance(wrapped_class, tuple):
+            wrapped_class, make_fields_optional = wrapped_class
+
+        def _wrap_models(field: FieldInfo) -> tuple[object, FieldInfo]:
+            tmp_field = deepcopy(field)
+
+            annotation = field.annotation
+
+            # Handle generics (like List, Dict, etc.)
+            if get_origin(annotation) is not None:
+                # Get the generic base (like List, Dict) and its arguments (like User in List[User])
+                generic_base = get_origin(annotation)
+                generic_args = get_args(annotation)
+
+                # Recursively apply Partial to each of the generic arguments
+                modified_args = tuple(
+                    (
+                        Partial[arg]
+                        if isinstance(arg, type) and issubclass(arg, BaseModel)
+                        else arg
+                    )
+                    for arg in generic_args
+                )
+
+                # Reconstruct the generic type with modified arguments
+                tmp_field.annotation = (
+                    generic_base[modified_args] if generic_base else None
+                )
+            # If the field is a BaseModel, then recursively convert it's
+            # attributes to optionals.
+            elif isinstance(annotation, type) and issubclass(annotation, BaseModel):
+                tmp_field.annotation = Partial[annotation]
+            return tmp_field.annotation, tmp_field
+
+        return create_model(
+            __model_name=(
+                wrapped_class.__name__
+                if wrapped_class.__name__.startswith("Partial")
+                else f"Partial{wrapped_class.__name__}"
+            ),
+            __base__=(wrapped_class, PartialBase),
+            __module__=wrapped_class.__module__,
+            **{
+                field_name: (
+                    _make_field_optional(field_info)
+                    if make_fields_optional is not None
+                    else _wrap_models(field_info)
+                )
+                for field_name, field_info in wrapped_class.model_fields.items()
+            },
+        )  # type: ignore
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/dsl/parallel.py
+=======
+import sys
+from typing import (
+    Any,
+    Optional,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+)
+from collections.abc import Generator
+from pydantic import BaseModel
+from instructor.function_calls import OpenAISchema, openai_schema
+from collections.abc import Iterable
+
+from instructor.mode import Mode
+
+T = TypeVar("T", bound=OpenAISchema)
+
+
+class ParallelBase:
+    def __init__(self, *models: type[OpenAISchema]):
+        # Note that for everything else we've created a class, but for parallel base it is an instance
+        assert len(models) > 0, "At least one model is required"
+        self.models = models
+        self.registry = {
+            model.__name__ if hasattr(model, "__name__") else str(model): model
+            for model in models
+        }
+
+    def from_response(
+        self,
+        response: Any,
+        mode: Mode,
+        validation_context: Optional[Any] = None,
+        strict: Optional[bool] = None,
+    ) -> Generator[BaseModel, None, None]:
+        #! We expect this from the OpenAISchema class, We should address
+        #! this with a protocol or an abstract class... @jxnlco
+        assert mode == Mode.PARALLEL_TOOLS, "Mode must be PARALLEL_TOOLS"
+        for tool_call in response.choices[0].message.tool_calls:
+            name = tool_call.function.name
+            arguments = tool_call.function.arguments
+            yield self.registry[name].model_validate_json(
+                arguments, context=validation_context, strict=strict
+            )
+
+
+if sys.version_info >= (3, 10):
+    from types import UnionType
+
+    def is_union_type(typehint: type[Iterable[T]]) -> bool:
+        return get_origin(get_args(typehint)[0]) in (Union, UnionType)
+else:
+
+    def is_union_type(typehint: type[Iterable[T]]) -> bool:
+        return get_origin(get_args(typehint)[0]) is Union
+
+
+def get_types_array(typehint: type[Iterable[T]]) -> tuple[type[T], ...]:
+    should_be_iterable = get_origin(typehint)
+    if should_be_iterable is not Iterable:
+        raise TypeError(f"Model should be with Iterable instead if {typehint}")
+
+    if is_union_type(typehint):
+        # works for Iterable[Union[int, str]], Iterable[int | str]
+        the_types = get_args(get_args(typehint)[0])
+        return the_types
+
+    # works for Iterable[int]
+    return get_args(typehint)
+
+
+def handle_parallel_model(typehint: type[Iterable[T]]) -> list[dict[str, Any]]:
+    the_types = get_types_array(typehint)
+    return [
+        {"type": "function", "function": openai_schema(model).openai_schema}
+        for model in the_types
+    ]
+
+
+def ParallelModel(typehint: type[Iterable[T]]) -> ParallelBase:
+    the_types = get_types_array(typehint)
+    return ParallelBase(*[model for model in the_types])
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/dsl/simple_type.py
+=======
+from __future__ import annotations
+from inspect import isclass
+import typing
+from pydantic import BaseModel, create_model  # type: ignore - remove once Pydantic is updated
+from enum import Enum
+
+
+from instructor.dsl.partial import Partial
+from instructor.function_calls import OpenAISchema
+
+
+T = typing.TypeVar("T")
+
+
+class AdapterBase(BaseModel):
+    pass
+
+
+class ModelAdapter(typing.Generic[T]):
+    """
+    Accepts a response model and returns a BaseModel with the response model as the content.
+    """
+
+    def __class_getitem__(cls, response_model: type[BaseModel]) -> type[BaseModel]:
+        assert is_simple_type(response_model), "Only simple types are supported"
+        return create_model(
+            "Response",
+            content=(response_model, ...),
+            __doc__="Correctly Formated and Extracted Response.",
+            __base__=(AdapterBase, OpenAISchema),
+        )
+
+
+def validateIsSubClass(response_model: type):
+    """
+    Temporary guard against issues with generics in Python 3.9
+    """
+    import sys
+
+    if sys.version_info < (3, 10):
+        if len(typing.get_args(response_model)) == 0:
+            return False
+        return issubclass(typing.get_args(response_model)[0], BaseModel)
+    return issubclass(response_model, BaseModel)
+
+
+def is_simple_type(
+    response_model: type[BaseModel] | str | int | float | bool | typing.Any,
+) -> bool:
+    # ! we're getting mixes between classes and instances due to how we handle some
+    # ! response model types, we should fix this in later PRs
+
+    try:
+        if isclass(response_model) and validateIsSubClass(response_model):
+            return False
+    except TypeError:
+        # ! In versions < 3.11, typing.Iterable is not a class, so we can't use isclass
+        # ! for now if `response_model` is an Iterable isclass and issubclass will raise
+        # ! TypeError, so we need to check if `response_model` is an Iterable
+        # ! This is a workaround for now, we should fix this in later PRs
+        return False
+
+    if typing.get_origin(response_model) in {typing.Iterable, Partial}:
+        # These are reserved for streaming types, would be nice to
+        return False
+
+    if response_model in {
+        str,
+        int,
+        float,
+        bool,
+    }:
+        return True
+
+    # If the response_model is a simple type like annotated
+    if typing.get_origin(response_model) in {
+        typing.Annotated,
+        typing.Literal,
+        typing.Union,
+        list,  # origin of List[T] is list
+    }:
+        return True
+
+    if isclass(response_model) and issubclass(response_model, Enum):
+        return True
+
+    return False
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/dsl/__init__.py
+=======
+from .iterable import IterableModel
+from .maybe import Maybe
+from .partial import Partial
+from .validators import llm_validator, openai_moderation
+from .citation import CitationMixin
+from .simple_type import is_simple_type, ModelAdapter
+
+__all__ = [  # noqa: F405
+    "CitationMixin",
+    "IterableModel",
+    "Maybe",
+    "Partial",
+    "llm_validator",
+    "openai_moderation",
+    "is_simple_type",
+    "ModelAdapter",
+]
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/dsl/validators.py
+=======
+from typing import Callable, Optional
+
+from openai import OpenAI
+from pydantic import Field
+
+from instructor.function_calls import OpenAISchema
+from instructor.client import Instructor
+
+
+class Validator(OpenAISchema):
+    """
+    Validate if an attribute is correct and if not,
+    return a new value with an error message
+    """
+
+    is_valid: bool = Field(
+        default=True,
+        description="Whether the attribute is valid based on the requirements",
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description="The error message if the attribute is not valid, otherwise None",
+    )
+    fixed_value: Optional[str] = Field(
+        default=None,
+        description="If the attribute is not valid, suggest a new value for the attribute",
+    )
+
+
+def llm_validator(
+    statement: str,
+    client: Instructor,
+    allow_override: bool = False,
+    model: str = "gpt-3.5-turbo",
+    temperature: float = 0,
+) -> Callable[[str], str]:
+    """
+    Create a validator that uses the LLM to validate an attribute
+
+    ## Usage
+
+    ```python
+    from instructor import llm_validator
+    from pydantic import BaseModel, Field, field_validator
+
+    class User(BaseModel):
+        name: str = Annotated[str, llm_validator("The name must be a full name all lowercase")
+        age: int = Field(description="The age of the person")
+
+    try:
+        user = User(name="Jason Liu", age=20)
+    except ValidationError as e:
+        print(e)
+    ```
+
+    ```
+    1 validation error for User
+    name
+        The name is valid but not all lowercase (type=value_error.llm_validator)
+    ```
+
+    Note that there, the error message is written by the LLM, and the error type is `value_error.llm_validator`.
+
+    Parameters:
+        statement (str): The statement to validate
+        model (str): The LLM to use for validation (default: "gpt-3.5-turbo-0613")
+        temperature (float): The temperature to use for the LLM (default: 0)
+        openai_client (OpenAI): The OpenAI client to use (default: None)
+    """
+
+    def llm(v: str) -> str:
+        resp = client.chat.completions.create(
+            response_model=Validator,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a world class validation model. Capable to determine if the following value is valid for the statement, if it is not, explain why and suggest a new value.",
+                },
+                {
+                    "role": "user",
+                    "content": f"Does `{v}` follow the rules: {statement}",
+                },
+            ],
+            model=model,
+            temperature=temperature,
+        )
+
+        # If the response is  not valid, return the reason, this could be used in
+        # the future to generate a better response, via reasking mechanism.
+        assert resp.is_valid, resp.reason
+
+        if allow_override and not resp.is_valid and resp.fixed_value is not None:
+            # If the value is not valid, but we allow override, return the fixed value
+            return resp.fixed_value
+        return v
+
+    return llm
+
+
+def openai_moderation(client: OpenAI) -> Callable[[str], str]:
+    """
+    Validates a message using OpenAI moderation model.
+
+    Should only be used for monitoring inputs and outputs of OpenAI APIs
+    Other use cases are disallowed as per:
+    https://platform.openai.com/docs/guides/moderation/overview
+
+    Example:
+    ```python
+    from instructor import OpenAIModeration
+
+    class Response(BaseModel):
+        message: Annotated[str, AfterValidator(OpenAIModeration(openai_client=client))]
+
+    Response(message="I hate you")
+    ```
+
+    ```
+     ValidationError: 1 validation error for Response
+     message
+    Value error, `I hate you.` was flagged for ['harassment'] [type=value_error, input_value='I hate you.', input_type=str]
+    ```
+
+    client (OpenAI): The OpenAI client to use, must be sync (default: None)
+    """
+
+    def validate_message_with_openai_mod(v: str) -> str:
+        response = client.moderations.create(input=v)
+        out = response.results[0]
+        cats = out.categories.model_dump()
+        if out.flagged:
+            raise ValueError(
+                f"`{v}` was flagged for {', '.join(cat for cat in cats if cats[cat])}"
+            )
+
+        return v
+
+    return validate_message_with_openai_mod
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/dsl/citation.py
+=======
+from pydantic import BaseModel, Field, model_validator, ValidationInfo
+from collections.abc import Generator
+
+
+class CitationMixin(BaseModel):
+    """
+    Helpful mixing that can use `validation_context={"context": context}` in `from_response` to find the span of the substring_phrase in the context.
+
+    ## Usage
+
+    ```python
+    from pydantic import BaseModel, Field
+    from instructor import CitationMixin
+
+    class User(BaseModel):
+        name: str = Field(description="The name of the person")
+        age: int = Field(description="The age of the person")
+        role: str = Field(description="The role of the person")
+
+
+    context = "Betty was a student. Jason was a student. Jason is 20 years old"
+
+    user = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {
+                "role": "user",
+                "content": "Extract jason from {context}",
+            },
+        response_model=User,
+        validation_context={"context": context},
+        ]
+    )
+
+    for quote in user.substring_quotes:
+        assert quote in context
+
+    print(user.model_dump())
+    ```
+
+    ## Result
+    ```
+    {
+        "name": "Jason Liu",
+        "age": 20,
+        "role": "student",
+        "substring_quotes": [
+            "Jason was a student",
+            "Jason is 20 years old",
+        ]
+    }
+    ```
+
+    """
+
+    substring_quotes: list[str] = Field(
+        description="List of unique and specific substrings of the quote that was used to answer the question.",
+    )
+
+    @model_validator(mode="after")  # type: ignore[misc]
+    def validate_sources(self, info: ValidationInfo) -> "CitationMixin":
+        """
+        For each substring_phrase, find the span of the substring_phrase in the context.
+        If the span is not found, remove the substring_phrase from the list.
+        """
+        if info.context is None:
+            return self
+
+        # Get the context from the info
+        text_chunks = info.context.get("context", None)
+
+        # Get the spans of the substring_phrase in the context
+        spans = list(self.get_spans(text_chunks))
+        # Replace the substring_phrase with the actual substring
+        self.substring_quotes = [text_chunks[span[0] : span[1]] for span in spans]
+        return self
+
+    def _get_span(
+        self, quote: str, context: str, errs: int = 5
+    ) -> Generator[tuple[int, int], None, None]:
+        import regex
+
+        minor = quote
+        major = context
+
+        errs_ = 0
+        s = regex.search(f"({minor}){{e<={errs_}}}", major)
+        while s is None and errs_ <= errs:
+            errs_ += 1
+            s = regex.search(f"({minor}){{e<={errs_}}}", major)
+
+        if s is not None:
+            yield from s.spans()
+
+    def get_spans(self, context: str) -> Generator[tuple[int, int], None, None]:
+        for quote in self.substring_quotes:
+            yield from self._get_span(quote, context)
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/_types/_alias.py
+=======
+from typing import Literal
+
+from typing_extensions import TypeAlias
+
+ModelNames: TypeAlias = Literal[
+    "gpt-4o",
+    "gpt-4-0125-preview",
+    "gpt-4-turbo-preview",
+    "gpt-4-1106-preview",
+    "gpt-4-vision-preview",
+    "gpt-4",
+    "gpt-4-0314",
+    "gpt-4-0613",
+    "gpt-4-32k",
+    "gpt-4-32k-0314",
+    "gpt-4-32k-0613",
+    "gpt-3.5-turbo",
+    "gpt-3.5-turbo-16k",
+    "gpt-3.5-turbo-0301",
+    "gpt-3.5-turbo-0613",
+    "gpt-3.5-turbo-1106",
+    "gpt-3.5-turbo-0125",
+    "gpt-3.5-turbo-16k-0613",
+    "gpt-3.5-turbo-instruct",
+    "text-embedding-ada-002",
+    "text-embedding-ada-002-v2",
+    "text-embedding-3-small",
+    "text-embedding-3-large",
+]
+
+
+======
+/home/bianders/miniconda3/lib/python3.12/site-packages/instructor/_types/__init__.py
+=======
+
+
