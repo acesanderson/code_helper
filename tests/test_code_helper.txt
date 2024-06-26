@@ -1,0 +1,121 @@
+Certainly! Below is a pytest file designed to test each function within your provided script. This test file aims to cover a variety of cases to ensure thorough testing.
+
+```python
+import pytest
+from unittest.mock import patch, mock_open, MagicMock
+import os
+import subprocess
+import importlib.util
+import tempfile
+
+# Import functions from the script
+from your_script_file import (
+    package_exists,
+    get_package_path,
+    gitignore_exists,
+    get_gitignore,
+    exclude_gitignored_files,
+    get_tree,
+    combine_code_files,
+)
+
+# Mock for importlib.util.find_spec
+@patch('importlib.util.find_spec')
+def test_package_exists(mock_find_spec):
+    mock_find_spec.return_value = True
+    assert package_exists('some_module')
+    
+    mock_find_spec.return_value = None
+    assert not package_exists('some_module')
+
+# Mock for importlib.util.find_spec to test path retrieval
+@patch('importlib.util.find_spec')
+def test_get_package_path(mock_find_spec):
+    mock_spec = MagicMock()
+    mock_spec.submodule_search_locations = ['/some/path']
+    mock_find_spec.return_value = mock_spec
+    assert get_package_path('some_module') == '/some/path'
+    
+    mock_find_spec.return_value = None
+    assert get_package_path('does_not_exist') == ''
+
+# Mock for os.path.exists
+@patch('os.path.exists')
+def test_gitignore_exists(mock_exists):
+    mock_exists.return_value = True
+    assert gitignore_exists('/some/repo')
+    
+    mock_exists.return_value = False
+    assert not gitignore_exists('/some/repo')
+
+# Mock for open
+@patch('builtins.open', new_callable=mock_open, read_data='.gitignore line 1\n.gitignore line 2\n')
+def test_get_gitignore(mock_file):
+    result = get_gitignore('/some/repo')
+    assert result == ['.gitignore line 1', '.gitignore line 2']
+
+def test_exclude_gitignored_files():
+    list_of_files = ['/file1', '/file2', '/ignored_file']
+    gitignore = ['ignored_file']
+    result = exclude_gitignored_files(list_of_files, gitignore)
+    assert result == ['/file1', '/file2']
+
+# Mocks for subprocess.run and open within get_tree
+@patch('subprocess.run')
+@patch('builtins.open', new_callable=mock_open, read_data='tree line 1\ntree line 2\n')
+@patch('os.remove')
+@patch('os.path.exists')
+def test_get_tree(mock_exists, mock_remove, mock_file, mock_run):
+    repo_path = '/some/repo'
+    
+    # No .gitignore
+    mock_exists.return_value = False
+    result = get_tree(repo_path)
+    assert result == 'tree line 1\ntree line 2\n'
+    
+    # With .gitignore
+    mock_exists.return_value = True
+    with patch('your_script_file.get_gitignore', return_value=['ignored_file']):
+        result = get_tree(repo_path)
+        assert result == 'tree line 1\ntree line 2\n'  # Since our mock file data does not have excluded files
+
+# Mock for os.walk and open within combine_code_files
+@patch('os.walk')
+@patch('builtins.open', new_callable=mock_open)
+@patch('os.path.exists')
+def test_combine_code_files(mock_exists, mock_file, mock_walk):
+    mock_walk.return_value = [('/some/repo', ('subdir',), ('file1.py', 'file2.js', '.gitignore'))]
+    mock_exists.side_effect = [False, True]
+
+    with tempfile.TemporaryDirectory() as tempdir:
+        repo_path = tempdir
+        module_name = 'test_module'
+        output_file = os.path.join('module_files', f'{module_name}.txt')
+        
+        combine_code_files(repo_path, module_name)
+        
+        mock_file.assert_called_with(output_file, 'w', encoding='utf-8')
+        mock_file().write.assert_any_call(f"======\n{repo_path}/file1.py\n=======\n")
+
+if __name__ == "__main__":
+    pytest.main()
+```
+
+### Explanation:
+1. **Mocks and Patches**:
+    - Functions that interact with system resources like file system and subprocesses are mocked to isolate the tests from the environment.
+    - `importlib.util.find_spec`, `os.path.exists`, `subprocess.run`, and built-in `open` are among the patched functions.
+
+2. **Testing Functions Individually**:
+    - Each function from the script is tested in isolation with various return values and conditions to cover different scenarios.
+
+3. **File Handling**:
+    - `tempfile.TemporaryDirectory` is used to create a temporary directory for testing `combine_code_files` to avoid actual changes to the file system.
+
+4. **Tree Output and Gitignore Files**:
+    - Simulated output for `tree` and `.gitignore` content to ensure `get_tree` and `exclude_gitignored_files` operate correctly.
+
+5. **Command Line Interface (CLI)**:
+    - The `main` function could be tested similarly with `argparse` but typically requires more advanced testing strategies involving command-line argument simulations. 
+
+Save this file as `test_your_script_file.py` (replacing `your_script_file` with the actual name of your script file), and you can run it using `pytest` to ensure all functionalities are tested.

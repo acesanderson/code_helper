@@ -109,17 +109,30 @@ def main():
 	"""
 	parser = argparse.ArgumentParser(description="Find a python library path by import name.")
 	# Add arguments
-	parser.add_argument("input_string", type=str, help="A simple input string")
+	parser.add_argument("input_string", type=str, nargs = "?", help="A simple input string")
+	# Add an option to enter a path
+	parser.add_argument("-p", "--path", type=str, help="A direct path to a repo, for example a user-created module hosted locally.")
 	# Parse the arguments
 	args = parser.parse_args()
 	# Access the arguments
-	module_name = args.input_string
-	if package_exists(module_name):
-		repo_path = get_package_path(module_name)
+	# If the user enters a path, use that path
+	if args.path:
+		repo_path = args.path
+		module_name = os.path.basename(repo_path)
 		combine_code_files(repo_path, module_name)
 		print(f"All code files have been combined into {module_name}.txt")
+		return
 	else:
-		print(f"The module {module_name} does not exist.")
+		if args.input_string:
+			module_name = args.input_string
+			if package_exists(module_name):
+				repo_path = get_package_path(module_name)
+				combine_code_files(repo_path, module_name)
+				print(f"All code files have been combined into {module_name}.txt")
+			else:
+				print(f"The module {module_name} does not exist.")
+		else:
+			print("Please enter a module name or a path to a repository.")
 
 
 if __name__ == "__main__":
