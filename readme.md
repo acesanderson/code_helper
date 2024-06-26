@@ -6,6 +6,8 @@ This script, code_helper.py, is a utility for debugging and collaborative coding
 - Generating a tree structure of the repository.
 - Copying the combined code and tree structure to the clipboard.
 
+==Main use case: run it in the directory of your code, and immediately get the entire project in your clipboard to paste in Claude/GPT.==
+
 ## Key Features:
 
 - Can be run with a module name, a path to a repository, or in the current directory.
