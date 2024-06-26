@@ -18,7 +18,7 @@ The script will exclude files that are gitignored in the repository. (Needs to b
 
 Next up: also capture terminal output and add it to the file.
 """
-
+from terminal_output import get_current_directory, get_environment_vars, get_shell_history, run_and_capture_command
 import importlib.util
 import argparse
 import os
@@ -132,6 +132,15 @@ def combine_code_files(repo_path, module_name):
 							outfile.write("\n\n")
 					except Exception as e:
 						print(f"Error processing {file_path}: {str(e)}")
+		# Add the terminal information at the end of the file
+		outfile.write("=============================================\n\n")
+		outfile.write("Terminal Information:\n")
+		outfile.write(get_current_directory() + "\n\n")
+		outfile.write(get_environment_vars() + "\n")
+		outfile.write(get_shell_history() + "\n")
+		outfile.write("\nLast Command Output:\n")
+		outfile.write(run_and_capture_command("ls -la"))  # You can change this command as needed
+		outfile.write("\n\n")
 	# now save to clipboard
 	with open(output_file, 'r', encoding='utf-8') as f:
 		save_to_clipboard(f.read())
