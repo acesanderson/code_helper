@@ -1,7 +1,37 @@
+"""
+Code helper is great for debugging and collaborative coding with LLMs.
+
+This script takes a module name or a path to a repository and combines all code files in the module into a single file.
+You can also run it directly in your current directory and it will generate the single file and add it to clipboard.
+You can paste into Claude automatically.
+
+Usage:
+- Run the script with a module name: python code_helper.py numpy
+- Run the script with a path: python code_helper.py -p /path/to/repo
+- Run the script in the current directory: python code_helper.py -c
+
+The script will generate a file with the module name or the directory name and add it to your clipboard.
+
+The script will also generate a tree structure of the repository and add it to the top of the file.
+
+The script will exclude files that are gitignored in the repository. (Needs to be debugged)
+
+Next up: also capture terminal output and add it to the file.
+"""
+
 import importlib.util
 import argparse
 import os
 import subprocess
+import pyperclip
+
+# Create a function that takes a string and saves to user's clipboard
+def save_to_clipboard(output):
+	"""
+	Save the output to the clipboard.
+	"""
+	pyperclip.copy(output)
+	print("The output has been copied to your clipboard.")
 
 def package_exists(import_name: str) -> bool:
 	"""
@@ -73,7 +103,7 @@ def combine_code_files(repo_path, module_name):
 	"""
 	Takes the path and the module name, and it saves a combined file of the repo to a file with the module name + '.txt'
 	"""
-	output_file = f'module_files/{module_name}.txt'
+	output_file = f'/home/bianders/Brian_Code/code_helper/module_files/{module_name}.txt'
 	with open(output_file, 'w', encoding='utf-8') as outfile:
 		# Add the module name at the top of the file
 		outfile.write(f"Module Name: {module_name}\n")
@@ -102,6 +132,9 @@ def combine_code_files(repo_path, module_name):
 							outfile.write("\n\n")
 					except Exception as e:
 						print(f"Error processing {file_path}: {str(e)}")
+	# now save to clipboard
+	with open(output_file, 'r', encoding='utf-8') as f:
+		save_to_clipboard(f.read())
 
 def main():
 	"""
@@ -112,28 +145,33 @@ def main():
 	parser.add_argument("input_string", type=str, nargs = "?", help="A simple input string")
 	# Add an option to enter a path
 	parser.add_argument("-p", "--path", type=str, help="A direct path to a repo, for example a user-created module hosted locally.")
+	parser.add_argument("-c", "--current", action="store_true", help="Use the current directory as the path.")
 	# Parse the arguments
 	args = parser.parse_args()
 	# Access the arguments
 	# If the user enters a path, use that path
+	if args.current:
+		repo_path = os.getcwd()
+		module_name = os.path.basename(repo_path)
+		combine_code_files(repo_path, module_name)
+		print(f"All code files have been combined into {module_name}.txt")
+		return
 	if args.path:
 		repo_path = args.path
 		module_name = os.path.basename(repo_path)
 		combine_code_files(repo_path, module_name)
 		print(f"All code files have been combined into {module_name}.txt")
 		return
-	else:
-		if args.input_string:
-			module_name = args.input_string
-			if package_exists(module_name):
-				repo_path = get_package_path(module_name)
-				combine_code_files(repo_path, module_name)
-				print(f"All code files have been combined into {module_name}.txt")
-			else:
-				print(f"The module {module_name} does not exist.")
+	if args.input_string:
+		module_name = args.input_string
+		if package_exists(module_name):
+			repo_path = get_package_path(module_name)
+			combine_code_files(repo_path, module_name)
+			print(f"All code files have been combined into {module_name}.txt")
 		else:
-			print("Please enter a module name or a path to a repository.")
-
+			print(f"The module {module_name} does not exist.")
+	else:
+		print("Please enter a module name or a path to a repository.")
 
 if __name__ == "__main__":
 	main()
