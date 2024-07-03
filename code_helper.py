@@ -25,6 +25,9 @@ import os
 import subprocess
 import pyperclip
 
+# Create relative path so that it can save to correct folder regardless of where it's run from.
+dir_path = os.path.dirname(os.path.realpath(__file__))
+
 # Create a function that takes a string and saves to user's clipboard
 def save_to_clipboard(output):
 	"""
@@ -86,12 +89,13 @@ def get_tree(repo_path: str) -> str:
 	Takes the repo path and returns the tree structure of the repository as a string.
 	This will go at the top of the module_file to provide more context for the LLM.
 	"""
-	subprocess.run(["tree", repo_path, "-o", "tree.txt"])
+	tree_path = f"{dir_path}/tree.txt"
+	subprocess.run(["tree", repo_path, "-o", tree_path])
 	# read the result from the file
-	with open("tree.txt", "r") as f:
+	with open(tree_path, "r") as f:
 		tree = f.read()
 	# remove the file after reading
-	os.remove("tree.txt")
+	os.remove(tree_path)
 	# use exclude_gitignored_files to remove gitignored files from the tree
 	if gitignore_exists(repo_path):
 		gitignore = get_gitignore(repo_path)
@@ -103,7 +107,7 @@ def combine_code_files(repo_path, module_name):
 	"""
 	Takes the path and the module name, and it saves a combined file of the repo to a file with the module name + '.txt'
 	"""
-	output_file = f'/home/bianders/Brian_Code/code_helper/module_files/{module_name}.txt'
+	output_file = f'{dir_path}/module_files/{module_name}.txt'
 	with open(output_file, 'w', encoding='utf-8') as outfile:
 		# Add the module name at the top of the file
 		outfile.write(f"Module Name: {module_name}\n")
